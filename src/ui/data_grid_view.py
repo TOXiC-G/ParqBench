@@ -33,6 +33,7 @@ from src.ui.pagination_bar import PaginationBar
 from src.ui.schema_dialog import SchemaDialog
 from src.ui.column_schema_dialogs import AddColumnDialog, RenameColumnDialog
 from src.ui.formula_dialog import FormulaBuilderDialog
+from src.ui.parquet_diff import WorkingCopyDiffDialog
 
 
 class ExcelTableView(QTableView):
@@ -602,6 +603,23 @@ class DataGridWidget(QWidget):
             parts.append(f"Max: {stats['max']:g}")
         self.lbl_stats.setText("   |   ".join(parts))
 
+    def open_working_copy_diff(self):
+        """Opens the Git-style Diff Dialog to review unsaved changes against baseline."""
+        base_df = self.table_model.get_original_dataframe()
+        current_df = self.table_model.get_dataframe()
+        file_name = self._current_metadata.get("file_name", "Current Parquet") if self._current_metadata else "Current Parquet"
+
+        dlg = WorkingCopyDiffDialog(base_df, current_df, file_name=file_name, parent=self)
+        dlg.revert_requested.connect(self._revert_all_to_baseline)
+        dlg.exec()
+
+    def _revert_all_to_baseline(self):
+        base_df = self.table_model.get_original_dataframe()
+        self.table_model.set_dataframe(base_df)
+        self.table_model.mark_clean()
+        self._on_model_modified()
+        QMessageBox.information(self, "Reverted", "All changes have been reverted back to the original file.")
+
     def _show_context_menu(self, pos):
         index = self.table_view.indexAt(pos)
         menu = QMenu(self)
@@ -635,6 +653,9 @@ class DataGridWidget(QWidget):
         act_del_row.triggered.connect(self._delete_selected_rows)
 
         menu.addSeparator()
+
+        act_diff = menu.addAction("🔍 Review Changes (Git Diff)...")
+        act_diff.triggered.connect(self.open_working_copy_diff)
 
         act_formula = menu.addAction("𝑓 Formula Builder...")
         act_formula.triggered.connect(self._open_formula_builder)

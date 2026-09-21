@@ -23,6 +23,7 @@ class ParquetTableModel(QAbstractTableModel):
     def __init__(self, df: Optional[pd.DataFrame] = None, parent=None):
         super().__init__(parent)
         self._df = df if df is not None else pd.DataFrame()
+        self._original_df: pd.DataFrame = self._df.copy()
         self._modified_cells: Set[Tuple[int, int]] = set()  # (actual_row, col)
         self._is_dirty: bool = False
 
@@ -183,7 +184,7 @@ class ParquetTableModel(QAbstractTableModel):
         col_dtype = self._col_dtypes[col]
         current_val = self._df.iat[actual_row, col]
 
-        parsed_val, success = self._cast_value(str(value).strip(), col_dtype)
+        parsed_val, success = self._cast_value(str(value).strip(), col_dtype, col=col)
         if not success:
             return False
 
@@ -235,6 +236,11 @@ class ParquetTableModel(QAbstractTableModel):
             if section < len(self._col_names):
                 col_name = self._col_names[section]
                 dtype_str = str(self._col_dtypes[section])
+                if dtype_str == "object" and self._df is not None and len(self._df) > 0:
+                    import datetime
+                    sample = self._df[col_name].dropna()
+                    if not sample.empty and any(isinstance(v, (datetime.date, datetime.datetime)) for v in sample.head(10)):
+                        dtype_str = "date32 (date)"
                 null_cnt = int(self._df[col_name].isna().sum())
                 total = len(self._df)
                 pct = (null_cnt / total * 100) if total > 0 else 0
@@ -402,9 +408,10 @@ class ParquetTableModel(QAbstractTableModel):
         # Determine default value
         default = None
         if default_val_str:
+            import datetime
             dtype_map = {
                 "int64": int, "float64": float, "string": str, "bool": bool,
-                "datetime64": pd.Timestamp, "date32": str,
+                "datetime64": pd.Timestamp, "date32": lambda s: pd.to_datetime(s).date(),
             }
             try:
                 caster = dtype_map.get(dtype_str, str)
@@ -412,6 +419,8 @@ class ParquetTableModel(QAbstractTableModel):
                     default = default_val_str.lower() in ("true", "1", "yes")
                 elif caster == pd.Timestamp:
                     default = pd.Timestamp(default_val_str)
+                elif dtype_str == "date32":
+                    default = pd.to_datetime(default_val_str).date()
                 else:
                     default = caster(default_val_str)
             except Exception:
@@ -428,6 +437,8 @@ class ParquetTableModel(QAbstractTableModel):
             self._df[col_name] = pd.array(
                 [default if default else pd.NaT] * len(self._df), dtype="datetime64[ns]"
             )
+        elif dtype_str == "date32":
+            self._df[col_name] = pd.array([default] * len(self._df), dtype="object")
         else:
             self._df[col_name] = pd.array([default] * len(self._df), dtype="object")
 
@@ -501,18 +512,28 @@ class ParquetTableModel(QAbstractTableModel):
         ]
 
         alignments = []
-        for dt in self._col_dtypes:
+        for c, dt in enumerate(self._col_dtypes):
             if pd.api.types.is_numeric_dtype(dt) and not pd.api.types.is_bool_dtype(dt):
                 alignments.append(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
             elif pd.api.types.is_bool_dtype(dt) or pd.api.types.is_datetime64_any_dtype(dt):
                 alignments.append(int(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter))
             else:
-                alignments.append(int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter))
+                import datetime
+                is_date = False
+                if len(self._df) > 0:
+                    sample = self._df.iloc[:10, c].dropna()
+                    if not sample.empty and any(isinstance(v, (datetime.date, datetime.datetime)) for v in sample):
+                        is_date = True
+                if is_date:
+                    alignments.append(int(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter))
+                else:
+                    alignments.append(int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter))
         self._col_alignments = alignments
 
     def set_dataframe(self, df: pd.DataFrame) -> None:
         """Replaces the active DataFrame in the model."""
         self._df = df.copy()
+        self._original_df = df.copy()
         self._rebuild_column_cache()
         self._modified_cells.clear()
         self._active_filters.clear()
@@ -525,12 +546,16 @@ class ParquetTableModel(QAbstractTableModel):
     def get_dataframe(self) -> pd.DataFrame:
         return self._df
 
+    def get_original_dataframe(self) -> pd.DataFrame:
+        return self._original_df.copy()
+
     @property
     def is_dirty(self) -> bool:
         return self._is_dirty
 
     def mark_clean(self) -> None:
         self._is_dirty = False
+        self._original_df = self._df.copy()
         self._modified_cells.clear()
         self._undo_stack.setClean()
         if len(self._df) > 0 and len(self._col_names) > 0:
@@ -643,7 +668,7 @@ class ParquetTableModel(QAbstractTableModel):
             for r_offset in range(num_paste_rows):
                 target_r = actual_start_row + r_offset
                 raw_val = matrix[r_offset][c_offset].strip() if c_offset < len(matrix[r_offset]) else ""
-                parsed_val, success = self._cast_value(raw_val, col_dtype)
+                parsed_val, success = self._cast_value(raw_val, col_dtype, col=target_col)
                 if success:
                     try:
                         self._df.iat[target_r, target_col] = parsed_val
@@ -738,7 +763,7 @@ class ParquetTableModel(QAbstractTableModel):
     # Internal Type Conversion
     # -------------------------------------------------------------------------
 
-    def _cast_value(self, input_str: str, target_dtype: Any) -> Tuple[Any, bool]:
+    def _cast_value(self, input_str: str, target_dtype: Any, col: Optional[int] = None) -> Tuple[Any, bool]:
         if input_str == "" or input_str.lower() in ("none", "null", "<null>", "nan"):
             return None, True
 
@@ -761,6 +786,14 @@ class ParquetTableModel(QAbstractTableModel):
                 return pd.to_datetime(input_str), True
 
             else:
+                # Check if this object column is date-like (contains datetime.date)
+                if col is not None and self._df is not None and col < len(self._df.columns):
+                    import datetime
+                    sample = self._df.iloc[:, col].dropna()
+                    if not sample.empty and any(isinstance(v, (datetime.date, datetime.datetime)) for v in sample.head(10)):
+                        parsed_dt = pd.to_datetime(input_str, errors="coerce")
+                        if pd.notna(parsed_dt):
+                            return parsed_dt.date(), True
                 return input_str, True
 
         except Exception:

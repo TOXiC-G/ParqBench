@@ -31,7 +31,7 @@ from src.ui.file_explorer import FileExplorerWidget
 from src.ui.data_grid_view import DataGridWidget
 from src.ui.sql_console import SqlConsoleWidget
 from src.ui.data_profiler import DataProfilerWidget
-from src.ui.parquet_diff import ParquetDiffDialog
+from src.ui.parquet_diff import ParquetDiffDialog, WorkingCopyDiffDialog
 from src.ui.column_schema_dialogs import AddColumnDialog
 from src.ui.styles import MODERN_DARK_THEME, MODERN_LIGHT_THEME
 
@@ -246,6 +246,14 @@ class MainWindow(QMainWindow):
         act_formula.triggered.connect(self._formula_active)
         edit_menu.addAction(act_formula)
 
+        edit_menu.addSeparator()
+
+        self.act_review_changes = QAction("🔍 Review Changes / Diff with Original...", self)
+        self.act_review_changes.setShortcut(QKeySequence("Ctrl+Shift+D"))
+        self.act_review_changes.setToolTip("Open Git-style diff inspector for unsaved changes (Ctrl+Shift+D)")
+        self.act_review_changes.triggered.connect(self._review_changes_active)
+        edit_menu.addAction(self.act_review_changes)
+
         # ----- VIEW MENU -----
         view_menu = menubar.addMenu("&View")
 
@@ -328,6 +336,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.act_toggle_sql)
         toolbar.addAction(self.act_toggle_profiler)
         toolbar.addAction(act_diff)
+        toolbar.addAction(self.act_review_changes)
 
     # =========================================================================
     # Tab Management
@@ -575,6 +584,20 @@ class MainWindow(QMainWindow):
         g = self._current_grid()
         if g:
             g._show_schema_dialog()
+
+    def _review_changes_active(self):
+        """Open the Git-style Working Copy Diff inspector for the active tab."""
+        g = self._current_grid()
+        if not g:
+            return
+        if not g.is_dirty:
+            QMessageBox.information(
+                self,
+                "No Changes",
+                "The current file has no unsaved changes to review.",
+            )
+            return
+        g.open_working_copy_diff()
 
     # =========================================================================
     # Panel Toggles

@@ -28,25 +28,26 @@ class TestUIComponents(unittest.TestCase):
         window = MainWindow()
         self.assertIsNotNone(window)
         self.assertIsNotNone(window.file_explorer)
-        self.assertIsNotNone(window.data_grid)
+        self.assertIsNotNone(window.tab_widget)
         window.close()
 
     def test_load_sample_file(self):
         window = MainWindow(initial_file=self.sample_path)
-        self.assertEqual(window._current_file_path, self.sample_path)
-        self.assertEqual(window.data_grid.table_model.rowCount(), 250)
-        self.assertEqual(window.data_grid.table_model.columnCount(), 9)
-        self.assertFalse(window.data_grid.is_dirty)
+        grid = window._current_grid()
+        self.assertIsNotNone(grid)
+        self.assertEqual(grid.table_model.rowCount(), 250)
+        self.assertEqual(grid.table_model.columnCount(), 9)
+        self.assertFalse(grid.is_dirty)
 
         # Test search
-        window.data_grid._perform_search("Laptop", case_sensitive=False)
-        self.assertGreater(len(window.data_grid._search_matches), 0)
+        grid._perform_search("Laptop", case_sensitive=False)
+        self.assertGreater(len(grid._search_matches), 0)
 
         # Test cell edit
-        idx = window.data_grid.table_model.index(0, 3)  # product column
-        window.data_grid.table_model.setData(idx, "Super Laptop X")
+        idx = grid.table_model.index(0, 3)  # product column
+        grid.table_model.setData(idx, "Super Laptop X")
         # Mark clean so QMessageBox doesn't block headlessly on close
-        window.data_grid.mark_saved()
+        grid.mark_saved()
         window.close()
 
     def test_file_explorer_filtering(self):

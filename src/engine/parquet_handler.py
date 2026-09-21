@@ -72,6 +72,101 @@ class ParquetHandler:
         return df, schema, metadata
 
     @staticmethod
+    def _coerce_series_for_arrow_field(series: pd.Series, field: Optional[pa.Field] = None) -> pa.Array:
+        """Safely coerces a Pandas Series into a PyArrow Array matching the target field type."""
+        import datetime
+
+        if field is None:
+            # Check if series contains datetime.date objects or mixed dates/strings
+            non_nulls = [v for v in series if pd.notna(v) and v is not None]
+            has_dates = any(isinstance(v, (datetime.date, datetime.datetime, pd.Timestamp)) for v in non_nulls)
+            has_strs = any(isinstance(v, str) for v in non_nulls)
+            if has_dates and has_strs:
+                try:
+                    dt_series = pd.to_datetime(series, errors="coerce")
+                    date_vals = [d.date() if pd.notna(d) else None for d in dt_series]
+                    return pa.array(date_vals, type=pa.date32())
+                except Exception:
+                    pass
+            try:
+                return pa.Array.from_pandas(series)
+            except Exception:
+                return pa.array([str(v) if pd.notna(v) and v is not None else None for v in series])
+
+        arrow_type = field.type
+
+        try:
+            # 1. Date types: date32, date64
+            if pa.types.is_date(arrow_type):
+                dt_series = pd.to_datetime(series, errors="coerce")
+                date_vals = [d.date() if pd.notna(d) else None for d in dt_series]
+                return pa.array(date_vals, type=arrow_type)
+
+            # 2. Timestamp types
+            elif pa.types.is_timestamp(arrow_type):
+                dt_series = pd.to_datetime(series, errors="coerce")
+                return pa.Array.from_pandas(dt_series, type=arrow_type)
+
+            # 3. String / Binary types
+            elif pa.types.is_string(arrow_type) or pa.types.is_large_string(arrow_type) or pa.types.is_binary(arrow_type) or pa.types.is_large_binary(arrow_type):
+                str_vals = [
+                    (v.isoformat() if hasattr(v, "isoformat") else str(v))
+                    if pd.notna(v) and v is not None else None
+                    for v in series
+                ]
+                return pa.array(str_vals, type=arrow_type)
+
+            # 4. Integer types
+            elif pa.types.is_integer(arrow_type):
+                def _to_int(v):
+                    try:
+                        if pd.isna(v) or v is None or str(v).strip() == "":
+                            return None
+                        return int(round(float(v)))
+                    except Exception:
+                        return None
+                return pa.array([_to_int(v) for v in series], type=arrow_type)
+
+            # 5. Floating point types
+            elif pa.types.is_floating(arrow_type):
+                def _to_float(v):
+                    try:
+                        if pd.isna(v) or v is None or str(v).strip() == "":
+                            return None
+                        return float(v)
+                    except Exception:
+                        return None
+                return pa.array([_to_float(v) for v in series], type=arrow_type)
+
+            # 6. Boolean types
+            elif pa.types.is_boolean(arrow_type):
+                def _to_bool(v):
+                    if pd.isna(v) or v is None:
+                        return None
+                    if isinstance(v, bool):
+                        return v
+                    s = str(v).strip().lower()
+                    if s in ("true", "1", "t", "yes", "y"):
+                        return True
+                    if s in ("false", "0", "f", "no", "n"):
+                        return False
+                    return None
+                return pa.array([_to_bool(v) for v in series], type=arrow_type)
+
+            # 7. Default fallback with explicit type
+            return pa.Array.from_pandas(series, type=arrow_type)
+
+        except Exception:
+            try:
+                arr = pa.Array.from_pandas(series)
+                return arr.cast(arrow_type)
+            except Exception:
+                try:
+                    return pa.Array.from_pandas(series)
+                except Exception:
+                    return pa.array([str(v) if pd.notna(v) and v is not None else None for v in series])
+
+    @staticmethod
     def write_parquet(
         df: pd.DataFrame,
         dest_path: str,
@@ -93,26 +188,33 @@ class ParquetHandler:
         # Ensure destination directory exists
         os.makedirs(os.path.dirname(os.path.abspath(dest_path)), exist_ok=True)
 
-        # Convert DataFrame to PyArrow Table
-        if original_schema is not None:
-            # Build target schema matching current df columns
-            fields = []
-            for col in df.columns:
-                if col in original_schema.names:
-                    fields.append(original_schema.field(col))
-                else:
-                    # Infer new column type from DataFrame
-                    inferred_table = pa.Table.from_pandas(df[[col]])
-                    fields.append(inferred_table.schema.field(col))
-            
-            target_schema = pa.schema(fields, metadata=original_schema.metadata)
-            
-            try:
-                table = pa.Table.from_pandas(df, schema=target_schema, preserve_index=False)
-            except Exception:
-                # Fallback to standard conversion if strict casting fails
-                table = pa.Table.from_pandas(df, preserve_index=False)
-        else:
+        arrays = []
+        fields = []
+
+        try:
+            if original_schema is not None:
+                for col in df.columns:
+                    series = df[col]
+                    field = original_schema.field(col) if col in original_schema.names else None
+                    arr = ParquetHandler._coerce_series_for_arrow_field(series, field)
+                    if field is not None:
+                        fields.append(field)
+                    else:
+                        fields.append(pa.field(str(col), arr.type))
+                    arrays.append(arr)
+
+                target_schema = pa.schema(fields, metadata=original_schema.metadata)
+                table = pa.Table.from_arrays(arrays, schema=target_schema)
+            else:
+                for col in df.columns:
+                    series = df[col]
+                    arr = ParquetHandler._coerce_series_for_arrow_field(series, None)
+                    fields.append(pa.field(str(col), arr.type))
+                    arrays.append(arr)
+                table = pa.Table.from_arrays(arrays, schema=pa.schema(fields))
+
+        except Exception:
+            # Fallback to standard conversion if column-by-column assembly encounters unexpected error
             table = pa.Table.from_pandas(df, preserve_index=False)
 
         # Write to destination parquet file
