@@ -29,6 +29,9 @@ class TestUIComponents(unittest.TestCase):
         self.assertIsNotNone(window)
         self.assertIsNotNone(window.file_explorer)
         self.assertIsNotNone(window.tab_widget)
+        self.assertIn("ParqBench", window.windowTitle())
+        self.assertTrue(window.acceptDrops())
+        self.assertFalse(window.windowIcon().isNull())
         window.close()
 
     def test_load_sample_file(self):

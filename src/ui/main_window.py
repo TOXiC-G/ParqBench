@@ -10,7 +10,7 @@ from typing import Optional, List
 import pyarrow as pa
 import pyarrow.dataset as pad
 
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QSettings, QTimer, QThread
 from PySide6.QtWidgets import (
     QMainWindow,
     QSplitter,
@@ -22,11 +22,18 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QWidget,
     QVBoxLayout,
+    QHBoxLayout,
+    QPushButton,
     QDockWidget,
+    QToolButton,
+    QMenu,
 )
-from PySide6.QtGui import QAction, QKeySequence, QUndoGroup
+from PySide6.QtGui import QAction, QKeySequence, QUndoGroup, QIcon
 
+from src import __version__, __app_name__
 from src.engine.parquet_handler import ParquetHandler
+from src.engine.updater import UpdateCheckWorker, UpdateInfo, GITHUB_REPO
+from src.ui.updater_dialog import UpdaterDialog
 from src.ui.file_explorer import FileExplorerWidget
 from src.ui.data_grid_view import DataGridWidget
 from src.ui.sql_console import SqlConsoleWidget
@@ -49,14 +56,26 @@ class MainWindow(QMainWindow):
 
     def __init__(self, initial_file: Optional[str] = None):
         super().__init__()
-        self.setWindowTitle("Parquet Editor — Excel-like Tabular Suite")
+        self.setWindowTitle(f"{__app_name__} — Parquet Tabular Suite")
         self.resize(1380, 820)
         self.setMinimumSize(900, 550)
 
+        # Set application icon if available
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        icon_path = os.path.join(repo_root, "assets", "icon.ico")
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(repo_root, "assets", "icon.png")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+
+        self.setAcceptDrops(True)
         self._is_dark_theme = True
+        self._settings = QSettings("ParqBench", "ParqBench")
         # UndoGroup tracks the active tab's undo stack
         self._undo_group = QUndoGroup(self)
         self._tabs: List[TabEntry] = []
+        self._update_check_thread: Optional[QThread] = None
+        self._available_update_info: Optional[UpdateInfo] = None
 
         self._setup_ui()
         self._setup_menus_and_toolbars()
@@ -68,6 +87,10 @@ class MainWindow(QMainWindow):
             # Start with one blank tab
             self._new_tab()
 
+        # Check for update on startup if enabled in settings
+        if self._settings.value("check_updates_on_startup", True, type=bool):
+            QTimer.singleShot(1500, self._check_updates_silent)
+
     # =========================================================================
     # UI Setup
     # =========================================================================
@@ -77,8 +100,12 @@ class MainWindow(QMainWindow):
         self.root_splitter = QSplitter(Qt.Orientation.Horizontal, self)
         self.root_splitter.setChildrenCollapsible(False)
 
-        # Left Pane: File Explorer
-        self.file_explorer = FileExplorerWidget(os.getcwd(), self)
+        # Left Pane: File Explorer (safeguard against starting in System32 / Windows dir)
+        default_dir = os.getcwd()
+        system_root = os.environ.get("SystemRoot", "C:\\Windows").lower()
+        if default_dir.lower().startswith(system_root):
+            default_dir = os.path.expanduser("~")
+        self.file_explorer = FileExplorerWidget(default_dir, self)
         self.file_explorer.file_selected.connect(self._on_file_selected)
         self.root_splitter.addWidget(self.file_explorer)
 
@@ -134,6 +161,30 @@ class MainWindow(QMainWindow):
 
     def _setup_menus_and_toolbars(self):
         menubar = self.menuBar()
+
+        # Corner widget on the File, Edit, View bar (empty space at the end of it)
+        corner_widget = QWidget(self)
+        corner_layout = QHBoxLayout(corner_widget)
+        corner_layout.setContentsMargins(0, 0, 10, 0)
+        corner_layout.setSpacing(8)
+
+        self.lbl_update_status = QLabel("")
+        self.lbl_update_status.setStyleSheet("color: #94a3b8; font-size: 11px; font-weight: 500;")
+        self.lbl_update_status.setVisible(False)
+        corner_layout.addWidget(self.lbl_update_status)
+
+        self.btn_update_available = QPushButton("🚀 Update Available")
+        self.btn_update_available.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_update_available.setStyleSheet(
+            "QPushButton { background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #10b981, stop:1 #06b6d4); "
+            "color: white; font-size: 11px; font-weight: bold; border-radius: 4px; padding: 3px 10px; border: none; } "
+            "QPushButton:hover { background: #059669; }"
+        )
+        self.btn_update_available.setVisible(False)
+        self.btn_update_available.clicked.connect(self._on_update_corner_btn_clicked)
+        corner_layout.addWidget(self.btn_update_available)
+
+        menubar.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
 
         # ----- FILE MENU -----
         file_menu = menubar.addMenu("&File")
@@ -308,7 +359,21 @@ class MainWindow(QMainWindow):
 
         # ----- HELP MENU -----
         help_menu = menubar.addMenu("&Help")
-        act_about = QAction("ℹ️ About Parquet Editor", self)
+        act_check_updates = QAction("🔄 Check for Updates...", self)
+        act_check_updates.triggered.connect(self._check_for_updates_manual)
+        help_menu.addAction(act_check_updates)
+
+        self.act_check_updates_startup = QAction("Check for Updates on Startup", self)
+        self.act_check_updates_startup.setCheckable(True)
+        self.act_check_updates_startup.setChecked(
+            self._settings.value("check_updates_on_startup", True, type=bool)
+        )
+        self.act_check_updates_startup.toggled.connect(self._toggle_update_on_startup)
+        help_menu.addAction(self.act_check_updates_startup)
+
+        help_menu.addSeparator()
+
+        act_about = QAction("ℹ️ About ParqBench", self)
         act_about.triggered.connect(self._show_about_dialog)
         help_menu.addAction(act_about)
 
@@ -337,6 +402,39 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.act_toggle_profiler)
         toolbar.addAction(act_diff)
         toolbar.addAction(self.act_review_changes)
+
+        toolbar.addSeparator()
+
+        # Settings Dropdown in Toolbar
+        btn_settings = QToolButton(self)
+        btn_settings.setText("⚙️ Settings")
+        btn_settings.setToolTip("Application Settings & Update Preferences")
+        btn_settings.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        btn_settings.setStyleSheet(
+            "QToolButton { padding: 4px 10px; font-weight: 500; border-radius: 4px; } "
+            "QToolButton:hover { background: #334155; }"
+        )
+
+        settings_menu = QMenu(btn_settings)
+
+        # Add update actions directly in the Settings menu
+        settings_menu.addAction(self.act_check_updates_startup)
+
+        act_manual_update_tb = QAction("🔄 Check for Updates Now...", self)
+        act_manual_update_tb.triggered.connect(self._check_for_updates_manual)
+        settings_menu.addAction(act_manual_update_tb)
+
+        settings_menu.addSeparator()
+        act_theme_tb = QAction("🌗 Toggle Dark / Light Theme", self)
+        act_theme_tb.triggered.connect(self._toggle_theme)
+        settings_menu.addAction(act_theme_tb)
+
+        act_about_tb = QAction(f"ℹ️ About {__app_name__}", self)
+        act_about_tb.triggered.connect(self._show_about_dialog)
+        settings_menu.addAction(act_about_tb)
+
+        btn_settings.setMenu(settings_menu)
+        toolbar.addWidget(btn_settings)
 
     # =========================================================================
     # Tab Management
@@ -397,10 +495,10 @@ class MainWindow(QMainWindow):
             fp = entry.file_path
             if fp:
                 self.lbl_status_file.setText(f"📄 {os.path.basename(fp)} [Original Protected]")
-                self.setWindowTitle(f"Parquet Editor — {os.path.basename(fp)}")
+                self.setWindowTitle(f"{__app_name__} — {os.path.basename(fp)}")
             else:
                 self.lbl_status_file.setText("No active file")
-                self.setWindowTitle("Parquet Editor — Untitled")
+                self.setWindowTitle(f"{__app_name__} — Untitled")
 
     def _current_grid(self) -> Optional[DataGridWidget]:
         idx = self.tab_widget.currentIndex()
@@ -439,7 +537,7 @@ class MainWindow(QMainWindow):
 
             self.lbl_status_msg.setText(f"Loaded {metadata['num_rows']:,} rows")
             self.lbl_status_file.setText(f"📄 {os.path.basename(file_path)} [Original Protected]")
-            self.setWindowTitle(f"Parquet Editor — {os.path.basename(file_path)}")
+            self.setWindowTitle(f"{__app_name__} — {os.path.basename(file_path)}")
 
             # Feed SQL console and profiler
             self.sql_console.set_dataframe(df)
@@ -472,7 +570,7 @@ class MainWindow(QMainWindow):
                 self.tab_widget.setTabText(self.tab_widget.currentIndex(), os.path.basename(file_path))
                 self.lbl_status_msg.setText(f"Loaded {metadata['num_rows']:,} rows")
                 self.lbl_status_file.setText(f"📄 {os.path.basename(file_path)} [Original Protected]")
-                self.setWindowTitle(f"Parquet Editor — {os.path.basename(file_path)}")
+                self.setWindowTitle(f"{__app_name__} — {os.path.basename(file_path)}")
                 self.sql_console.set_dataframe(df)
                 self.profiler.set_dataframe(df)
             except Exception as e:
@@ -760,12 +858,63 @@ class MainWindow(QMainWindow):
     def _apply_theme(self):
         self.setStyleSheet(MODERN_DARK_THEME if self._is_dark_theme else MODERN_LIGHT_THEME)
 
+    # =========================================================================
+    # Software Updates & Settings
+    # =========================================================================
+
+    def _toggle_update_on_startup(self, checked: bool):
+        self._settings.setValue("check_updates_on_startup", checked)
+        self.act_check_updates_startup.setChecked(checked)
+        status = "Update check on startup enabled." if checked else "Update check on startup disabled."
+        self.lbl_status_msg.setText(status)
+
+    def _check_for_updates_manual(self):
+        """Open the Software Update window and check immediately."""
+        dlg = UpdaterDialog(self, initial_info=self._available_update_info)
+        dlg.exec()
+
+    def _check_updates_silent(self):
+        """Perform background check on startup and show status in the top bar corner."""
+        self.lbl_update_status.setText("🔄 Checking for updates…")
+        self.lbl_update_status.setVisible(True)
+
+        self._update_check_thread = QThread()
+        worker = UpdateCheckWorker(GITHUB_REPO)
+        worker.moveToThread(self._update_check_thread)
+        self._update_check_thread.started.connect(worker.run)
+        worker.check_finished.connect(self._on_silent_check_finished)
+        worker.check_finished.connect(self._update_check_thread.quit)
+        self._silent_worker = worker
+        self._update_check_thread.start()
+
+    def _on_silent_check_finished(self, info: Optional[UpdateInfo], error: str):
+        if error:
+            self.lbl_update_status.setVisible(False)
+            return
+
+        if info and info.is_newer:
+            self._available_update_info = info
+            self.lbl_update_status.setVisible(False)
+            self.btn_update_available.setText(f"🚀 Update to v{info.latest_version} Available")
+            self.btn_update_available.setToolTip(
+                f"ParqBench v{info.latest_version} is available (Current: v{info.current_version}). Click to download and install."
+            )
+            self.btn_update_available.setVisible(True)
+        else:
+            self.lbl_update_status.setText("✓ Up to date")
+            QTimer.singleShot(3000, lambda: self.lbl_update_status.setVisible(False))
+
+    def _on_update_corner_btn_clicked(self):
+        """Handle click on the top-bar update button."""
+        dlg = UpdaterDialog(self, initial_info=self._available_update_info)
+        dlg.exec()
+
     def _show_about_dialog(self):
         QMessageBox.about(
             self,
-            "About Parquet Editor",
-            "<h3>Parquet Editor v2</h3>"
-            "<p>A lightweight Excel-like desktop editor for Apache Parquet files.</p>"
+            f"About {__app_name__}",
+            f"<h3>{__app_name__} v{__version__}</h3>"
+            "<p>A lightweight Excel-like desktop editor and analytical workspace for Apache Parquet files.</p>"
             "<ul>"
             "<li><b>Multi-Tab Workspace</b>: Open multiple files simultaneously.</li>"
             "<li><b>Undo/Redo</b>: Full command history (Ctrl+Z / Ctrl+Y) for every edit.</li>"
@@ -779,6 +928,25 @@ class MainWindow(QMainWindow):
             "<li><b>Engine</b>: PySide6 (Qt6) + PyArrow + Pandas + DuckDB.</li>"
             "</ul>",
         )
+
+    # =========================================================================
+    # Drag and Drop Events
+    # =========================================================================
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            file_path = url.toLocalFile()
+            if os.path.isfile(file_path) and (file_path.lower().endswith(".parquet") or file_path.lower().endswith(".pq")):
+                self.open_file_in_new_tab(file_path)
+            elif os.path.isdir(file_path):
+                self.open_directory(file_path)
+        event.acceptProposedAction()
 
     # =========================================================================
     # Close Event

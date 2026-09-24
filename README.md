@@ -1,69 +1,101 @@
-# ParqBench (Parquet Editor) 📊
+# ParqBench 📊
 
-A lightweight, desktop-based Excel-like spreadsheet editor and analytical workspace for Apache Parquet files. Built for speed and safety using **Python 3.11**, **PySide6 (Qt6)**, **Pandas**, and **PyArrow**.
-
----
-
-## 🚀 Quick Start
-
-### 1. Environment Activation (Windows)
-
-Using **PowerShell**:
-`.\.venv\Scripts\Activate.ps1`
-
-Using **Command Prompt (CMD)**:
-`.\.venv\Scripts\activate.bat`
-
-### 2. Launch the Application
-
-`python main.py`
-
-Or open a file directly:
-`python main.py sample_data\sales_orders.parquet`
+A high-performance, desktop-based Excel-like spreadsheet editor and analytical workbench for Apache Parquet files. Built for speed, safety, and non-destructive workflows using **Python 3.11**, **PySide6 (Qt6)**, **Pandas**, **PyArrow**, and **DuckDB**.
 
 ---
 
-## 🌟 Current Features
+## 🌟 Key Features
 
-### 🗂️ 1. Filtered Workspace Explorer
-- Live directory tree view filtered strictly to folders and `.parquet` files.
-- Context menu: Open file, Reveal in Windows File Explorer, Copy Absolute Path.
+### 🗂️ 1. Workspace Explorer & Hive Partitions
+- Filtered directory tree view strictly listing folders and `.parquet` files.
+- Drag-and-drop `.parquet` files and directories directly into the window.
+- **Hive Partition Loader**: Scan and load partitioned datasets as unified DataFrames.
+- Resizable explorer columns with auto-fit, column visibility toggles, and context menus.
 
-### 📈 2. Excel-like Data Grid
-- **Inline Cell Editing**: Type-aware editing (integers, floats, booleans, timestamps, strings, nulls) with amber highlight tracking for unsaved changes.
-- **Excel Integration**: Full `Ctrl+C` / `Ctrl+V` support (TSV format) for seamless copying to/from Excel and Google Sheets.
-- **Status Metrics**: Real-time **Count**, **Sum**, **Average**, **Min**, and **Max** on selected cells.
-- **Row Operations & Search**: Instant search (`Ctrl+F`), row jumping, and insert/delete row capabilities.
-- **Schema & Types Dialog**: Inspect PyArrow types, Pandas dtypes, null statistics, and metadata.
+### 📈 2. Excel-like Data Grid & Editing
+- **Type-Aware In-Place Editing**: Integers, floats, decimals, booleans, timestamps, strings, and nulls with amber highlight tracking for modified cells.
+- **Full Undo / Redo**: Unlimited command stack (`Ctrl+Z` / `Ctrl+Y`) for cell edits, row inserts/deletes, and bulk paste operations.
+- **Excel & Sheets Interop**: Seamless copy/paste (`Ctrl+C` / `Ctrl+V`) via standard TSV.
+- **Instant Search**: Find toolbar (`Ctrl+F`) with real-time match cycling and occurrence counts.
+- **Spark / Excel Style Filtering**: Categorical checkboxes + numeric conditions (`>`, `<`, `=`, `between`, `is null`).
+- **Live Aggregation Metrics**: Real-time **Count**, **Sum**, **Average**, **Min**, and **Max** on multi-cell selections.
 
-### 🔍 3. Visual Parquet Diff Tool
-- Compare two Parquet files side-by-side or match by primary key.
-- Color-coded grid highlighting added rows, deleted rows, and modified cells.
-- Detailed schema drift summary and CSV export.
+### 🧮 3. Formula Builder & Schema Ops
+- **Dynamic Formula Engine**: Compute new columns or mutate existing ones via expressions (e.g. `col('price') * col('qty')`, `to_numeric(c('tax'))`, `where(cond, x, y)`).
+- **Safe Type Coercion**: Handles mixed `Decimal`, `float`, and `int` types automatically.
+- **Schema Management**: Add, rename, or delete columns with live schema inspection.
 
-### 🛡️ 4. Non-Destructive Save Engine
-- Intercepts standard save actions (`Ctrl+S`) to force a **"Save As"** dialog (e.g., `<filename>_edited.parquet`).
-- Guarantees original source files remain entirely untouched.
-- Serializes data back to `.parquet` using PyArrow with snappy compression and strict type preservation. 
+### 🦆 4. DuckDB SQL Console & Data Profiler
+- **Embedded DuckDB SQL Console**: Run SQL queries (`SELECT * FROM current_table WHERE ...`) directly on loaded Parquet data in a non-blocking background thread.
+- **Visual Data Profiler**: Instant column distributions, null percentages, quantiles, and ASCII histograms.
 
-### 🧱 5: Core Editing & Schema Mutations (Next Up)
-- **Undo/Redo Command Stack**: Full `Ctrl+Z` and `Ctrl+Y` support for all cell, row, and bulk paste edits.
-- **Schema Operations**: Add, rename, or delete columns directly from the grid header.
-- **Formula Engine**: Calculate new columns using expressions (e.g., `col('price') * col('qty')`).
+### 🔍 5. Visual Parquet Diff & Working Copy Inspector
+- Side-by-side file comparison or primary key matching with color-coded additions, deletions, and cell edits.
+- **Working Copy Diff (`Ctrl+Shift+D`)**: Git-style diff inspector comparing your current unsaved edits against the original baseline.
 
-### 📂 6: Workspace & Storage Engine
-- **Multi-Tab Interface**: Open, edit, and compare multiple Parquet files concurrently.
-- **Hive Partition Support**: Automatically scan and load directory trees organized by partition keys (e.g., `/year=2025/month=08/*.parquet`).
-
-### 🔬 7: Analytics & Advanced Tooling
-- **Embedded DuckDB SQL Console**: Run blazing-fast SQL queries directly on in-memory Arrow tables.
-- **Data Profiler**: Visual sidebars displaying column distributions, histograms, null percentages, and min/max ranges.
+### 🛡️ 6. Non-Destructive Save Engine
+- Intercepts standard save actions (`Ctrl+S`) to protect original files and force a safe save workflow.
+- High-fidelity serialization using PyArrow with Snappy compression and strict schema preservation.
+- Export to CSV, Excel (`.xlsx`), and JSON.
 
 ---
 
-## 🧪 Testing
+## 🚀 Quick Start (Development)
 
-To run the automated engine and UI test suite:
-`.\.venv\Scripts\python.exe -m unittest discover tests`
+### 1. Requirements
+- Python 3.11+
+- Install dependencies:
+  ```bash
+  pip install -r requirements.txt
+  ```
 
-**⚠️ Disclaimer:** This software is in active development, has not been thoroughly tested, and may contain bugs. Please back up your critical data before use.
+### 2. Launch Application
+```bash
+python main.py
+```
+Or open a file or directory directly:
+```bash
+python main.py sample_data\sales_orders.parquet
+```
+
+### 3. Run Automated Tests
+```bash
+python -m pytest
+```
+
+---
+
+## 📦 Building & Non-Admin Installation
+
+ParqBench supports complete **non-administrator installation** on Windows — no UAC prompts or elevated permissions are required.
+
+### 1. Build Executable & Portable Package
+Run the automated release build script:
+```bash
+python build_release.py
+```
+This produces:
+- `dist/ParqBench/`: Standalone folder distribution containing `ParqBench.exe`.
+- `dist/ParqBench-v1.0.0-windows-x64-portable.zip`: Portable ZIP archive that runs from any folder.
+
+### 2. Non-Admin User Installation Options
+
+#### Option A: Inno Setup Installer (`.exe`)
+The installer is configured with `PrivilegesRequired=lowest`:
+- Installs to `%LOCALAPPDATA%\Programs\ParqBench`
+- Creates Start Menu & Desktop shortcuts
+- Registers `.parquet` file association under `HKCU`
+- Never asks for Administrator permissions or UAC elevation
+- Compile script: `installer\parqbench_setup.iss` (requires Inno Setup)
+
+#### Option B: One-Click PowerShell User Installer
+Run from PowerShell:
+```powershell
+.\installer\install_user.ps1
+```
+This automatically deploys ParqBench to `%LOCALAPPDATA%\Programs\ParqBench`, creates Start Menu shortcuts, and registers `.parquet` file associations without administrator rights.
+
+---
+
+## 📄 License
+MIT License.

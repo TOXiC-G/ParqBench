@@ -3,3 +3,6 @@ pandas>=2.1.0
 pyarrow>=14.0.0
 openpyxl>=3.1.0
 duckdb
+Pillow>=10.0.0
+pyinstaller>=6.0.0
+
