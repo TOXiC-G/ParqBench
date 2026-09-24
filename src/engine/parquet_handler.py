@@ -153,7 +153,29 @@ class ParquetHandler:
                     return None
                 return pa.array([_to_bool(v) for v in series], type=arrow_type)
 
-            # 7. Default fallback with explicit type
+            # 7. Decimal types (decimal128, decimal256)
+            elif pa.types.is_decimal(arrow_type):
+                import decimal
+                scale = getattr(arrow_type, "scale", 2)
+                quant = decimal.Decimal(10) ** -scale if scale > 0 else decimal.Decimal(1)
+
+                def _to_decimal(v):
+                    if pd.isna(v) or v is None or str(v).strip() == "":
+                        return None
+                    try:
+                        if isinstance(v, decimal.Decimal):
+                            return v.quantize(quant)
+                        elif isinstance(v, (int, float)):
+                            return decimal.Decimal(str(round(float(v), scale))).quantize(quant)
+                        else:
+                            cleaned = str(v).strip().replace("$", "").replace(",", "")
+                            return decimal.Decimal(cleaned).quantize(quant)
+                    except Exception:
+                        return None
+
+                return pa.array([_to_decimal(v) for v in series], type=arrow_type)
+
+            # 8. Default fallback with explicit type
             return pa.Array.from_pandas(series, type=arrow_type)
 
         except Exception:

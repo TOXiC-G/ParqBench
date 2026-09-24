@@ -238,9 +238,14 @@ class ParquetTableModel(QAbstractTableModel):
                 dtype_str = str(self._col_dtypes[section])
                 if dtype_str == "object" and self._df is not None and len(self._df) > 0:
                     import datetime
+                    import decimal
                     sample = self._df[col_name].dropna()
-                    if not sample.empty and any(isinstance(v, (datetime.date, datetime.datetime)) for v in sample.head(10)):
-                        dtype_str = "date32 (date)"
+                    if not sample.empty:
+                        first_items = sample.head(10)
+                        if any(isinstance(v, (datetime.date, datetime.datetime)) for v in first_items):
+                            dtype_str = "date32 (date)"
+                        elif any(isinstance(v, decimal.Decimal) for v in first_items):
+                            dtype_str = "decimal"
                 null_cnt = int(self._df[col_name].isna().sum())
                 total = len(self._df)
                 pct = (null_cnt / total * 100) if total > 0 else 0
@@ -359,24 +364,56 @@ class ParquetTableModel(QAbstractTableModel):
                 elif op == "not_null":
                     mask = mask & series.notna()
                 else:
-                    parsed_val1, s1 = self._cast_value(val1_str, dtype)
-                    if s1:
-                        if op == "=":
-                            mask = mask & (series == parsed_val1)
-                        elif op == "!=":
-                            mask = mask & (series != parsed_val1)
-                        elif op == ">":
-                            mask = mask & (series > parsed_val1)
-                        elif op == ">=":
-                            mask = mask & (series >= parsed_val1)
-                        elif op == "<":
-                            mask = mask & (series < parsed_val1)
-                        elif op == "<=":
-                            mask = mask & (series <= parsed_val1)
-                        elif op == "between":
-                            parsed_val2, s2 = self._cast_value(val2_str, dtype)
-                            if s2:
-                                mask = mask & (series >= parsed_val1) & (series <= parsed_val2)
+                    # Check if series is decimal in object column
+                    is_dec = False
+                    if dtype == object:
+                        import decimal
+                        sample = series.dropna()
+                        if not sample.empty and any(isinstance(v, decimal.Decimal) for v in sample.head(10)):
+                            is_dec = True
+
+                    if is_dec:
+                        num_series = pd.to_numeric(series, errors="coerce")
+                        try:
+                            clean_v1 = val1_str.replace("$", "").replace(",", "")
+                            parsed_val1 = float(clean_v1)
+                            if op == "=":
+                                mask = mask & (num_series == parsed_val1)
+                            elif op == "!=":
+                                mask = mask & (num_series != parsed_val1)
+                            elif op == ">":
+                                mask = mask & (num_series > parsed_val1)
+                            elif op == ">=":
+                                mask = mask & (num_series >= parsed_val1)
+                            elif op == "<":
+                                mask = mask & (num_series < parsed_val1)
+                            elif op == "<=":
+                                mask = mask & (num_series <= parsed_val1)
+                            elif op == "between":
+                                clean_v2 = val2_str.replace("$", "").replace(",", "")
+                                parsed_val2 = float(clean_v2)
+                                mask = mask & (num_series >= parsed_val1) & (num_series <= parsed_val2)
+                        except Exception:
+                            pass
+                    else:
+                        parsed_val1, s1 = self._cast_value(val1_str, dtype)
+                        if s1:
+                            if op == "=":
+                                mask = mask & (series == parsed_val1)
+                            elif op == "!=":
+                                mask = mask & (series != parsed_val1)
+                            elif op == ">":
+                                mask = mask & (series > parsed_val1)
+                            elif op == ">=":
+                                mask = mask & (series >= parsed_val1)
+                            elif op == "<":
+                                mask = mask & (series < parsed_val1)
+                            elif op == "<=":
+                                mask = mask & (series <= parsed_val1)
+                            elif op == "between":
+                                parsed_val2, s2 = self._cast_value(val2_str, dtype)
+                                if s2:
+                                    mask = mask & (series >= parsed_val1) & (series <= parsed_val2)
 
         filtered_sub_df = self._df[mask]
 
@@ -506,28 +543,36 @@ class ParquetTableModel(QAbstractTableModel):
 
         self._col_names = [str(c) for c in self._df.columns]
         self._col_dtypes = [self._df[c].dtype for c in self._df.columns]
-        self._is_numeric_cols = [
-            pd.api.types.is_numeric_dtype(dt) and not pd.api.types.is_bool_dtype(dt)
-            for dt in self._col_dtypes
-        ]
 
+        import decimal
+        import datetime
+
+        is_num_list = []
         alignments = []
-        for c, dt in enumerate(self._col_dtypes):
-            if pd.api.types.is_numeric_dtype(dt) and not pd.api.types.is_bool_dtype(dt):
+
+        for c, col_name in enumerate(self._df.columns):
+            dt = self._col_dtypes[c]
+            is_num = pd.api.types.is_numeric_dtype(dt) and not pd.api.types.is_bool_dtype(dt)
+            is_date = False
+
+            if not is_num and dt == object and len(self._df) > 0:
+                sample = self._df.iloc[:20, c].dropna()
+                if not sample.empty:
+                    if any(isinstance(v, decimal.Decimal) for v in sample):
+                        is_num = True
+                    elif any(isinstance(v, (datetime.date, datetime.datetime)) for v in sample):
+                        is_date = True
+
+            is_num_list.append(is_num)
+
+            if is_num:
                 alignments.append(int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter))
-            elif pd.api.types.is_bool_dtype(dt) or pd.api.types.is_datetime64_any_dtype(dt):
+            elif pd.api.types.is_bool_dtype(dt) or pd.api.types.is_datetime64_any_dtype(dt) or is_date:
                 alignments.append(int(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter))
             else:
-                import datetime
-                is_date = False
-                if len(self._df) > 0:
-                    sample = self._df.iloc[:10, c].dropna()
-                    if not sample.empty and any(isinstance(v, (datetime.date, datetime.datetime)) for v in sample):
-                        is_date = True
-                if is_date:
-                    alignments.append(int(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignVCenter))
-                else:
-                    alignments.append(int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter))
+                alignments.append(int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter))
+
+        self._is_numeric_cols = is_num_list
         self._col_alignments = alignments
 
     def set_dataframe(self, df: pd.DataFrame) -> None:
@@ -737,7 +782,14 @@ class ParquetTableModel(QAbstractTableModel):
             valid_series = series.dropna()
             non_empty += len(valid_series)
             if is_num and not valid_series.empty:
-                numeric_values.extend(valid_series.astype(float).tolist())
+                try:
+                    numeric_values.extend(valid_series.astype(float).tolist())
+                except Exception:
+                    for v in valid_series:
+                        try:
+                            numeric_values.append(float(v))
+                        except Exception:
+                            pass
 
         stats = {
             "count": total_count,
@@ -786,14 +838,23 @@ class ParquetTableModel(QAbstractTableModel):
                 return pd.to_datetime(input_str), True
 
             else:
-                # Check if this object column is date-like (contains datetime.date)
+                # Check if this object column is date-like or decimal-like
                 if col is not None and self._df is not None and col < len(self._df.columns):
                     import datetime
+                    import decimal
                     sample = self._df.iloc[:, col].dropna()
-                    if not sample.empty and any(isinstance(v, (datetime.date, datetime.datetime)) for v in sample.head(10)):
-                        parsed_dt = pd.to_datetime(input_str, errors="coerce")
-                        if pd.notna(parsed_dt):
-                            return parsed_dt.date(), True
+                    if not sample.empty:
+                        first_vals = sample.head(10)
+                        if any(isinstance(v, (datetime.date, datetime.datetime)) for v in first_vals):
+                            parsed_dt = pd.to_datetime(input_str, errors="coerce")
+                            if pd.notna(parsed_dt):
+                                return parsed_dt.date(), True
+                        elif any(isinstance(v, decimal.Decimal) for v in first_vals):
+                            try:
+                                cleaned = input_str.replace("$", "").replace(",", "")
+                                return decimal.Decimal(cleaned), True
+                            except Exception:
+                                return None, False
                 return input_str, True
 
         except Exception:

@@ -50,14 +50,28 @@ class SearchToolbar(QWidget):
         self.chk_case.stateChanged.connect(lambda: self._on_search_text_changed(self.txt_search.text()))
         layout.addWidget(self.chk_case)
 
-        self.btn_prev = QPushButton("◀")
-        self.btn_prev.setFixedWidth(28)
+        from PySide6.QtWidgets import QStyle
+
+        self.btn_prev = QPushButton()
+        self.btn_prev.setObjectName("iconBtn")
+        self.btn_prev.setFixedSize(28, 28)
+        icon_prev = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
+        if not icon_prev.isNull():
+            self.btn_prev.setIcon(icon_prev)
+        else:
+            self.btn_prev.setText("▲")
         self.btn_prev.setToolTip("Previous match (Shift+F3)")
         self.btn_prev.clicked.connect(lambda: self.navigate_match.emit(-1))
         layout.addWidget(self.btn_prev)
 
-        self.btn_next = QPushButton("▶")
-        self.btn_next.setFixedWidth(28)
+        self.btn_next = QPushButton()
+        self.btn_next.setObjectName("iconBtn")
+        self.btn_next.setFixedSize(28, 28)
+        icon_next = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+        if not icon_next.isNull():
+            self.btn_next.setIcon(icon_next)
+        else:
+            self.btn_next.setText("▼")
         self.btn_next.setToolTip("Next match (F3 or Enter)")
         self.btn_next.clicked.connect(lambda: self.navigate_match.emit(1))
         layout.addWidget(self.btn_next)
@@ -85,8 +99,14 @@ class SearchToolbar(QWidget):
         layout.addStretch(1)
 
         # Close toolbar button
-        self.btn_close = QPushButton("✕")
-        self.btn_close.setFixedWidth(24)
+        self.btn_close = QPushButton()
+        self.btn_close.setObjectName("iconBtn")
+        self.btn_close.setFixedSize(24, 24)
+        icon_close = self.style().standardIcon(QStyle.StandardPixmap.SP_TitleBarCloseButton)
+        if not icon_close.isNull():
+            self.btn_close.setIcon(icon_close)
+        else:
+            self.btn_close.setText("✕")
         self.btn_close.setToolTip("Close search bar (Esc)")
         self.btn_close.clicked.connect(self.closed.emit)
         layout.addWidget(self.btn_close)

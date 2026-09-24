@@ -64,13 +64,15 @@ class PaginationBar(QWidget):
 
         # Navigation Controls
         self.btn_first = QPushButton("⏮")
-        self.btn_first.setFixedWidth(28)
+        self.btn_first.setObjectName("iconBtn")
+        self.btn_first.setFixedSize(28, 28)
         self.btn_first.setToolTip("First page")
         self.btn_first.clicked.connect(lambda: self.set_page(1))
         layout.addWidget(self.btn_first)
 
         self.btn_prev = QPushButton("◀")
-        self.btn_prev.setFixedWidth(28)
+        self.btn_prev.setObjectName("iconBtn")
+        self.btn_prev.setFixedSize(28, 28)
         self.btn_prev.setToolTip("Previous page")
         self.btn_prev.clicked.connect(lambda: self.set_page(self._current_page - 1))
         layout.addWidget(self.btn_prev)
@@ -80,10 +82,12 @@ class PaginationBar(QWidget):
         layout.addWidget(lbl_page)
 
         self.spin_page = QSpinBox()
+        self.spin_page.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        self.spin_page.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spin_page.setMinimum(1)
         self.spin_page.setMaximum(1)
         self.spin_page.setValue(1)
-        self.spin_page.setFixedWidth(65)
+        self.spin_page.setFixedWidth(54)
         self.spin_page.valueChanged.connect(self._on_spin_page_changed)
         layout.addWidget(self.spin_page)
 
@@ -92,13 +96,15 @@ class PaginationBar(QWidget):
         layout.addWidget(self.lbl_total_pages)
 
         self.btn_next = QPushButton("▶")
-        self.btn_next.setFixedWidth(28)
+        self.btn_next.setObjectName("iconBtn")
+        self.btn_next.setFixedSize(28, 28)
         self.btn_next.setToolTip("Next page")
         self.btn_next.clicked.connect(lambda: self.set_page(self._current_page + 1))
         layout.addWidget(self.btn_next)
 
         self.btn_last = QPushButton("⏭")
-        self.btn_last.setFixedWidth(28)
+        self.btn_last.setObjectName("iconBtn")
+        self.btn_last.setFixedSize(28, 28)
         self.btn_last.setToolTip("Last page")
         self.btn_last.clicked.connect(lambda: self.set_page(self._total_pages))
         layout.addWidget(self.btn_last)

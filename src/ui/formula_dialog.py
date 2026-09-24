@@ -5,8 +5,13 @@ or overwrite an existing one. Uses a safe eval sandbox.
 """
 from __future__ import annotations
 
-from typing import Optional, List
+from typing import Optional, List, Any
 import traceback
+import decimal
+import datetime
+import math
+import re
+import numpy as np
 import pandas as pd
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -16,36 +21,179 @@ from PySide6.QtWidgets import (
 )
 
 
+class ColumnAccessor:
+    """Convenience accessor for DataFrame columns supporting call, index, and attribute access."""
+
+    def __init__(self, df: pd.DataFrame):
+        self._df = df
+
+    def __call__(self, name: str) -> pd.Series:
+        if name in self._df.columns:
+            return self._df[name]
+        # Case-insensitive fallback
+        lower_map = {str(c).lower(): c for c in self._df.columns}
+        if name.lower() in lower_map:
+            return self._df[lower_map[name.lower()]]
+        raise KeyError(f"Column '{name}' not found. Available columns: {list(self._df.columns)}")
+
+    def __getitem__(self, name: str) -> pd.Series:
+        return self.__call__(name)
+
+    def __getattr__(self, name: str) -> pd.Series:
+        if name in self._df.columns:
+            return self._df[name]
+        lower_map = {str(c).lower(): c for c in self._df.columns}
+        if name.lower() in lower_map:
+            return self._df[lower_map[name.lower()]]
+        raise AttributeError(f"Column '{name}' not found.")
+
+
+def to_numeric(val: Any) -> Any:
+    """Convert a Series, string, or numeric scalar to float, safely stripping currency symbols and commas."""
+    if isinstance(val, pd.Series):
+        if pd.api.types.is_numeric_dtype(val.dtype):
+            return val
+        cleaned = val.astype(str).str.replace(r"[^\d.\-+eE]", "", regex=True)
+        return pd.to_numeric(cleaned, errors="coerce")
+    elif isinstance(val, (int, float, decimal.Decimal, np.number)):
+        return float(val)
+    elif isinstance(val, str):
+        cleaned = re.sub(r"[^\d.\-+eE]", "", val)
+        try:
+            return float(cleaned)
+        except Exception:
+            return float("nan")
+    return pd.to_numeric(val, errors="coerce")
+
+
+def to_datetime(val: Any, **kwargs) -> Any:
+    """Safe pd.to_datetime with errors='coerce' by default."""
+    if "errors" not in kwargs:
+        kwargs["errors"] = "coerce"
+    return pd.to_datetime(val, **kwargs)
+
+
+def where(condition: Any, if_true: Any, if_false: Any) -> Any:
+    """Conditional IF-THEN-ELSE helper wrapping np.where."""
+    return np.where(condition, if_true, if_false)
+
+
+def coalesce(*args: Any) -> Any:
+    """Return the first non-null value across series or scalars (like SQL COALESCE)."""
+    if not args:
+        return None
+    res = None
+    for arg in args:
+        if res is None:
+            if isinstance(arg, pd.Series):
+                res = arg.copy()
+            else:
+                return arg
+        else:
+            if isinstance(arg, pd.Series):
+                res = res.fillna(arg)
+            else:
+                res = res.fillna(arg)
+                break
+    return res
+
+
+def safe_decimal(val: Any = "0") -> float:
+    """Safe Decimal helper returning float for arithmetic compatibility."""
+    if isinstance(val, (int, float, np.number)):
+        return float(val)
+    try:
+        return float(decimal.Decimal(str(val).strip()))
+    except Exception:
+        return float("nan")
+
+
+def _prepare_eval_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prepare an evaluation DataFrame where:
+    - Decimal objects are converted to float64 so arithmetic like col('price') * 1.2
+      succeeds smoothly without 'unsupported operand types decimal.Decimal and float'.
+    """
+    eval_df = df.copy(deep=False)
+    for col_name in df.columns:
+        series = df[col_name]
+        if series.dtype == object:
+            sample = series.dropna()
+            if not sample.empty:
+                first_items = sample.iloc[:25]
+                if any(isinstance(v, decimal.Decimal) for v in first_items):
+                    eval_df[col_name] = pd.to_numeric(series, errors="coerce")
+    return eval_df
+
+
 # Safe built-ins available inside expressions
-_SAFE_NAMESPACE_KEYS = ["abs", "round", "min", "max", "len", "str", "int", "float", "bool"]
+_SAFE_BUILTINS = [
+    "abs", "round", "min", "max", "len", "str", "int", "float", "bool",
+    "sum", "pow", "divmod", "all", "any", "enumerate", "zip", "range",
+    "list", "dict", "set", "tuple", "isinstance", "type",
+]
 
 
 def _build_safe_ns(df: pd.DataFrame) -> dict:
-    """Build the evaluation namespace with column references and safe pandas funcs."""
-    import numpy as np
-    ns: dict = {"df": df, "pd": pd, "np": np}
-    # Convenience: col('name') shortcut
-    ns["col"] = lambda name: df[name]
-    # Row index as a series
-    ns["index"] = df.index.to_series()
+    """Build the evaluation namespace with column references, math, and safe pandas funcs."""
+    eval_df = _prepare_eval_df(df)
+    col_accessor = ColumnAccessor(eval_df)
+
+    ns: dict = {
+        "df": eval_df,
+        "pd": pd,
+        "np": np,
+        "math": math,
+        "decimal": decimal,
+        "Decimal": safe_decimal,
+        "datetime": datetime,
+        "date": datetime.date,
+        "time": datetime.time,
+        "timedelta": datetime.timedelta,
+        "re": re,
+        "col": col_accessor,
+        "c": col_accessor,
+        "index": eval_df.index.to_series(),
+        "to_numeric": to_numeric,
+        "num": to_numeric,
+        "to_datetime": to_datetime,
+        "where": where,
+        "iff": where,
+        "coalesce": coalesce,
+        "clip": lambda s, low, high: s.clip(low, high) if hasattr(s, "clip") else min(max(s, low), high),
+    }
+
     # Safe builtins
-    for k in _SAFE_NAMESPACE_KEYS:
-        ns[k] = __builtins__[k] if isinstance(__builtins__, dict) else getattr(__builtins__, k, None)
+    for k in _SAFE_BUILTINS:
+        val = __builtins__[k] if isinstance(__builtins__, dict) else getattr(__builtins__, k, None)
+        if val is not None:
+            ns[k] = val
+
+    # Expose valid identifier column names directly in namespace
+    for col_name in eval_df.columns:
+        c_str = str(col_name)
+        if c_str.isidentifier() and c_str not in ns:
+            ns[c_str] = eval_df[col_name]
+
     return ns
 
 
 FUNCTION_HINTS = [
-    ("col('name')",         "Reference a column by name"),
-    ("col('a') + col('b')", "Add two columns"),
-    ("col('price') * 1.2",  "Scalar multiply"),
-    ("col('name').str.upper()", "String to uppercase"),
-    ("col('name').str.strip()", "Strip whitespace"),
-    ("col('val').clip(0, 100)", "Clamp values between 0 and 100"),
-    ("col('a').fillna(0)",  "Fill nulls with 0"),
-    ("col('a').isna()",     "Boolean: is null?"),
-    ("pd.to_datetime(col('date_str'))", "Parse datetime string"),
-    ("np.log1p(col('amount'))", "Natural log(1+x)"),
-    ("col('cat').map({'A': 1, 'B': 2})", "Map categorical to int"),
+    ("col('name')",                    "Reference a column by name (or use c('name'))"),
+    ("col('price') * 1.2",             "Scalar multiply (seamless with Decimal & float)"),
+    ("col('price') * col('quantity')", "Multiply two columns"),
+    ("where(col('price') > 100, 'High', 'Low')", "Conditional IF-THEN-ELSE"),
+    ("to_numeric(col('currency'))",    "Clean and convert currency/strings to numbers"),
+    ("coalesce(col('a'), col('b'), 0)","First non-null value across columns/scalars"),
+    ("col('name').str.upper()",        "String to uppercase"),
+    ("col('name').str.strip()",        "Strip whitespace from strings"),
+    ("round(col('price'), 2)",         "Round numbers to 2 decimal places"),
+    ("col('val').clip(0, 100)",        "Clamp values between 0 and 100"),
+    ("col('a').fillna(0)",             "Fill nulls with 0"),
+    ("col('a').isna()",                "Boolean: is null?"),
+    ("to_datetime(col('date_str'))",   "Parse datetime string"),
+    ("np.log1p(col('amount'))",        "Natural log(1 + x)"),
+    ("col('cat').map({'A': 1, 'B': 2})", "Map categorical values to new values"),
 ]
 
 
@@ -162,11 +310,11 @@ class FormulaBuilderDialog(QDialog):
             result = eval(expr, {"__builtins__": {}}, ns)  # noqa: S307
             if isinstance(result, pd.Series):
                 return result.reset_index(drop=True)
-            elif hasattr(result, "__len__") and len(result) == len(self._df):
-                return pd.Series(result, index=self._df.index)
+            elif isinstance(result, (list, tuple, np.ndarray, pd.Index)) and len(result) == len(self._df):
+                return pd.Series(result, index=self._df.index).reset_index(drop=True)
             else:
-                # Scalar — broadcast
-                return pd.Series([result] * len(self._df), index=self._df.index)
+                # Scalar — broadcast across all rows
+                return pd.Series([result] * len(self._df), index=self._df.index).reset_index(drop=True)
         except Exception as ex:
             self.lbl_status.setText(f"❌ Error: {ex}")
             return None

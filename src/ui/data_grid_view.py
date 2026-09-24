@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QAbstractItemView,
 )
-from PySide6.QtGui import QKeySequence, QGuiApplication, QCursor, QKeyEvent, QUndoStack
+from PySide6.QtGui import QKeySequence, QGuiApplication, QCursor, QKeyEvent, QWheelEvent, QUndoStack
 
 from src.models.parquet_table_model import ParquetTableModel
 from src.ui.cell_delegate import ParquetCellDelegate
@@ -76,6 +76,18 @@ class ExcelTableView(QTableView):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent):
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            delta = event.angleDelta().y() or event.angleDelta().x()
+            if delta != 0:
+                h_bar = self.horizontalScrollBar()
+                num_steps = delta / 120
+                scroll_amount = int(-num_steps * max(40, h_bar.singleStep() * 3))
+                h_bar.setValue(h_bar.value() + scroll_amount)
+                event.accept()
+                return
+        super().wheelEvent(event)
 
     def copy_selection(self):
         selection = self.selectionModel().selectedIndexes()
@@ -473,12 +485,12 @@ class DataGridWidget(QWidget):
             self.table_model.delete_column(col_name)
             self._on_model_modified()
 
-    def _open_formula_builder(self):
+    def _open_formula_builder(self, existing_col: Optional[str] = None):
         df = self.table_model.get_dataframe()
         if df.empty:
             QMessageBox.information(self, "Formula Builder", "No data loaded.")
             return
-        dlg = FormulaBuilderDialog(df, parent=self)
+        dlg = FormulaBuilderDialog(df, existing_col=existing_col, parent=self)
         if dlg.exec():
             target_col, result_series = dlg.get_result()
             if target_col is not None and result_series is not None:
@@ -632,6 +644,7 @@ class DataGridWidget(QWidget):
 
         menu.addSeparator()
 
+        col_name = None
         if index.isValid():
             df = self.table_model.get_dataframe()
             col_name = str(df.columns[index.column()])
@@ -657,8 +670,12 @@ class DataGridWidget(QWidget):
         act_diff = menu.addAction("🔍 Review Changes (Git Diff)...")
         act_diff.triggered.connect(self.open_working_copy_diff)
 
-        act_formula = menu.addAction("𝑓 Formula Builder...")
-        act_formula.triggered.connect(self._open_formula_builder)
+        if col_name:
+            act_formula = menu.addAction(f"𝑓 Formula Builder for '{col_name}'...")
+            act_formula.triggered.connect(lambda: self._open_formula_builder(existing_col=col_name))
+        else:
+            act_formula = menu.addAction("𝑓 Formula Builder...")
+            act_formula.triggered.connect(lambda: self._open_formula_builder())
 
         act_cols = menu.addAction("👁️ Manage Columns View...")
         act_cols.triggered.connect(self._open_column_manager)

@@ -50,9 +50,16 @@ class FileExplorerWidget(QWidget):
         self.btn_open_folder.setToolTip("Select workspace folder")
         self.btn_open_folder.clicked.connect(self._browse_folder)
 
-        self.btn_refresh = QPushButton("↻")
-        self.btn_refresh.setFixedWidth(28)
+        self.btn_refresh = QPushButton()
+        self.btn_refresh.setObjectName("iconBtn")
+        self.btn_refresh.setFixedSize(28, 28)
         self.btn_refresh.setToolTip("Refresh file tree")
+        from PySide6.QtWidgets import QStyle
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        if not icon.isNull():
+            self.btn_refresh.setIcon(icon)
+        else:
+            self.btn_refresh.setText("↻")
         self.btn_refresh.clicked.connect(self._refresh)
 
         header_layout.addWidget(self.title_label, 1)
@@ -75,6 +82,8 @@ class FileExplorerWidget(QWidget):
         self.tree_view.customContextMenuRequested.connect(self._show_context_menu)
         self.tree_view.doubleClicked.connect(self._on_item_double_clicked)
         self.tree_view.clicked.connect(self._on_item_clicked)
+        self.tree_view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tree_view.installEventFilter(self)
 
         layout.addWidget(self.tree_view, 1)
 
@@ -86,12 +95,22 @@ class FileExplorerWidget(QWidget):
 
         self.tree_view.setModel(self.model)
 
-        # Configure columns (Name, Size, Type, Date Modified)
+        # Configure columns (Name, Size, Type, Date Modified) - allow manual resizing and dragging
         header = self.tree_view.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionsMovable(True)
+        header.setStretchLastSection(False)
+        for i in range(4):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+
+        # Sensible initial column widths
+        header.resizeSection(0, 240)  # Name
+        header.resizeSection(1, 75)   # Size
+        header.resizeSection(2, 70)   # Type
+        header.resizeSection(3, 120)  # Date Modified
+
+        # Enable header right-click menu for toggling column visibility and auto-fitting
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._show_header_context_menu)
 
     def set_directory(self, path: str):
         """Sets the root directory of the file explorer."""
@@ -125,27 +144,69 @@ class FileExplorerWidget(QWidget):
         if os.path.isfile(file_path) and file_path.lower().endswith(".parquet"):
             self.file_selected.emit(file_path)
 
+    def _show_header_context_menu(self, pos):
+        menu = QMenu(self)
+        col_names = ["Name", "Size", "Type", "Date Modified"]
+        for col_idx, name in enumerate(col_names):
+            act = menu.addAction(f"Show {name}")
+            act.setCheckable(True)
+            act.setChecked(not self.tree_view.isColumnHidden(col_idx))
+            if col_idx == 0:
+                act.setEnabled(False)  # Name cannot be hidden
+            else:
+                act.toggled.connect(lambda checked, c=col_idx: self.tree_view.setColumnHidden(c, not checked))
+
+        menu.addSeparator()
+        act_autofit = menu.addAction("↔ Auto-fit Column Widths")
+        act_autofit.triggered.connect(self._autofit_columns)
+        act_reset = menu.addAction("↺ Reset Column Widths")
+        act_reset.triggered.connect(self._reset_column_widths)
+        menu.exec(QCursor.pos())
+
+    def _autofit_columns(self):
+        """Auto-fits all visible columns to their contents."""
+        header = self.tree_view.header()
+        for i in range(4):
+            if not self.tree_view.isColumnHidden(i):
+                self.tree_view.resizeColumnToContents(i)
+                if i == 0 and header.sectionSize(0) < 180:
+                    header.resizeSection(0, 180)
+
+    def _reset_column_widths(self):
+        """Resets columns to default balanced widths."""
+        header = self.tree_view.header()
+        header.resizeSection(0, 240)
+        header.resizeSection(1, 75)
+        header.resizeSection(2, 70)
+        header.resizeSection(3, 120)
+
     def _show_context_menu(self, pos):
         index = self.tree_view.indexAt(pos)
-        if not index.isValid():
-            return
-
-        file_path = self.model.filePath(index)
-        is_file = os.path.isfile(file_path)
-        is_parquet = is_file and file_path.lower().endswith(".parquet")
-
         menu = QMenu(self)
 
-        if is_parquet:
-            action_open = menu.addAction("Open in Editor")
-            action_open.triggered.connect(lambda: self.file_selected.emit(file_path))
+        if index.isValid():
+            file_path = self.model.filePath(index)
+            is_file = os.path.isfile(file_path)
+            is_parquet = is_file and file_path.lower().endswith(".parquet")
+
+            if is_parquet:
+                action_open = menu.addAction("Open in Editor")
+                action_open.triggered.connect(lambda: self.file_selected.emit(file_path))
+                menu.addSeparator()
+
+            action_reveal = menu.addAction("Show in File Explorer")
+            action_reveal.triggered.connect(lambda: self._reveal_in_explorer(file_path))
+
+            action_copy_path = menu.addAction("Copy Absolute Path")
+            action_copy_path.triggered.connect(lambda: self._copy_path(file_path))
+            menu.addSeparator()
+        else:
+            action_refresh = menu.addAction("↻ Refresh")
+            action_refresh.triggered.connect(self._refresh)
             menu.addSeparator()
 
-        action_reveal = menu.addAction("Show in File Explorer")
-        action_reveal.triggered.connect(lambda: self._reveal_in_explorer(file_path))
-
-        action_copy_path = menu.addAction("Copy Absolute Path")
-        action_copy_path.triggered.connect(lambda: self._copy_path(file_path))
+        action_autofit = menu.addAction("↔ Auto-fit Column Widths")
+        action_autofit.triggered.connect(self._autofit_columns)
 
         menu.exec(QCursor.pos())
 
@@ -157,3 +218,16 @@ class FileExplorerWidget(QWidget):
         from PySide6.QtGui import QGuiApplication
         clipboard = QGuiApplication.clipboard()
         clipboard.setText(os.path.abspath(path))
+
+    def eventFilter(self, watched, event):
+        from PySide6.QtCore import QEvent
+        if watched == self.tree_view and event.type() == QEvent.Type.Wheel:
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                delta = event.angleDelta().y() or event.angleDelta().x()
+                if delta != 0:
+                    h_bar = self.tree_view.horizontalScrollBar()
+                    num_steps = delta / 120
+                    scroll_amount = int(-num_steps * max(30, h_bar.singleStep() * 2))
+                    h_bar.setValue(h_bar.value() + scroll_amount)
+                    return True
+        return super().eventFilter(watched, event)
