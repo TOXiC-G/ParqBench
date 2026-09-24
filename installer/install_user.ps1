@@ -31,7 +31,7 @@ Write-Host "Files copied successfully." -ForegroundColor Green
 
 $ExePath = Join-Path $TargetDir "ParqBench.exe"
 $IconPath = Join-Path $TargetDir "assets\icon.ico"
-if (-not (Test-Path $IconPath)) { $IconPath = $ExePath }
+if (-not (Test-Path $IconPath)) { $IconPath = "$ExePath,0" }
 
 # 3. Create Start Menu Shortcut
 $WshShell = New-Object -ComObject WScript.Shell
@@ -41,7 +41,7 @@ $ShortcutPath = Join-Path $StartMenuDir "$AppName.lnk"
 $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
 $Shortcut.TargetPath = $ExePath
 $Shortcut.WorkingDirectory = $TargetDir
-$Shortcut.IconLocation = $IconPath
+$Shortcut.IconLocation = "$ExePath,0"
 $Shortcut.Description = "ParqBench — Parquet Tabular Suite"
 $Shortcut.Save()
 Write-Host "Start Menu shortcut created: $ShortcutPath" -ForegroundColor Green
@@ -52,7 +52,7 @@ $DesktopShortcutPath = Join-Path $DesktopDir "$AppName.lnk"
 $DesktopShortcut = $WshShell.CreateShortcut($DesktopShortcutPath)
 $DesktopShortcut.TargetPath = $ExePath
 $DesktopShortcut.WorkingDirectory = $TargetDir
-$DesktopShortcut.IconLocation = $IconPath
+$DesktopShortcut.IconLocation = "$ExePath,0"
 $DesktopShortcut.Description = "ParqBench — Parquet Tabular Suite"
 $DesktopShortcut.Save()
 Write-Host "Desktop shortcut created: $DesktopShortcutPath" -ForegroundColor Green

@@ -6,6 +6,7 @@ Data Profiler, Parquet Diff, Hive Partition loader.
 from __future__ import annotations
 
 import os
+import sys
 from typing import Optional, List
 import pyarrow as pa
 import pyarrow.dataset as pad
@@ -61,12 +62,21 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(900, 550)
 
         # Set application icon if available
+        candidates = []
+        if getattr(sys, "frozen", False):
+            exe_dir = os.path.dirname(sys.executable)
+            candidates.append(os.path.join(exe_dir, "assets", "icon.ico"))
+            candidates.append(os.path.join(exe_dir, "assets", "icon.png"))
+            if hasattr(sys, "_MEIPASS"):
+                candidates.append(os.path.join(sys._MEIPASS, "assets", "icon.ico"))
+                candidates.append(os.path.join(sys._MEIPASS, "assets", "icon.png"))
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        icon_path = os.path.join(repo_root, "assets", "icon.ico")
-        if not os.path.exists(icon_path):
-            icon_path = os.path.join(repo_root, "assets", "icon.png")
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
+        candidates.append(os.path.join(repo_root, "assets", "icon.ico"))
+        candidates.append(os.path.join(repo_root, "assets", "icon.png"))
+        for p in candidates:
+            if os.path.isfile(p):
+                self.setWindowIcon(QIcon(p))
+                break
 
         self.setAcceptDrops(True)
         self._is_dark_theme = True

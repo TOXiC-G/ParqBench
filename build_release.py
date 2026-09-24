@@ -52,6 +52,12 @@ def main():
         sys.exit(1)
     print(f"Executable verified at: {exe_file}")
 
+    # Ensure assets directory is present in root distribution folder
+    dest_assets = os.path.join(output_folder, "assets")
+    src_assets = os.path.join(REPO_ROOT, "assets")
+    if os.path.exists(src_assets):
+        shutil.copytree(src_assets, dest_assets, dirs_exist_ok=True)
+
     # 4. Create Portable ZIP
     print("\n[Step 4/5] Creating portable distribution ZIP...")
     zip_name = f"ParqBench-v{__version__}-windows-x64-portable.zip"
