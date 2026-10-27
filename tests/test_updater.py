@@ -169,6 +169,20 @@ class TestMainWindowUpdateSettings(unittest.TestCase):
 
         window.close()
 
+    def test_top_left_update_menus(self):
+        """Verifies that Check for Updates is present in the File menu and menubar context menu."""
+        window = MainWindow()
+
+        # 1. File menu (top-left) contains Check for Updates
+        file_actions = [a.text() for a in window.menuBar().actions()[0].menu().actions()]
+        self.assertTrue(any("Check for Updates" in a for a in file_actions))
+
+        # 2. Menubar has custom context menu enabled
+        from PySide6.QtCore import Qt
+        self.assertEqual(window.menuBar().contextMenuPolicy(), Qt.ContextMenuPolicy.CustomContextMenu)
+
+        window.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -71,8 +71,26 @@ class ExcelTableView(QTableView):
             self.paste_selection()
             event.accept()
             return
-        elif event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+        elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_D:
+            self.fill_down()
+            event.accept()
+            return
+        elif event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_R:
+            self.fill_right()
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_Delete:
             self.clear_selection()
+            event.accept()
+            return
+        elif event.key() == Qt.Key.Key_Backspace:
+            current = self.currentIndex()
+            if current.isValid():
+                self.edit(current)
+                from PySide6.QtWidgets import QLineEdit
+                ed = self.findChild(QLineEdit)
+                if ed:
+                    ed.clear()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -119,24 +137,146 @@ class ExcelTableView(QTableView):
             return
 
         selection = self.selectionModel().selectedIndexes()
-        start_row = min(idx.row() for idx in selection) if selection else 0
-        start_col = min(idx.column() for idx in selection) if selection else 0
+        if not selection:
+            return
+
+        model = self.model()
+        if not model:
+            return
 
         delimiter = "\t" if "\t" in text else ","
         try:
             reader = csv.reader(io.StringIO(text), delimiter=delimiter)
-            lines = list(reader)
+            matrix = [row for row in reader if row]
         except Exception:
-            lines = [line.split("\t") for line in text.splitlines()]
-            matrix = lines
+            matrix = [line.split("\t") for line in text.splitlines() if line.strip()]
 
-        matrix = lines
         if not matrix:
             return
 
-        model = self.model()
+        valid_indexes = [idx for idx in selection if not self.isColumnHidden(idx.column())]
+        if not valid_indexes:
+            return
+
+        num_clip_rows = len(matrix)
+        num_clip_cols = max(len(row) for row in matrix) if matrix else 0
+
+        # Unique selected visual rows & columns sorted
+        selected_visual_rows = sorted(set(idx.row() for idx in valid_indexes))
+        selected_cols = sorted(set(idx.column() for idx in valid_indexes))
+
+        has_bulk_edits = hasattr(model, "apply_bulk_cell_edits")
+
+        # CASE 1: 1x1 clipboard (single value) pasted into multi-cell selection
+        if num_clip_rows == 1 and num_clip_cols == 1 and len(valid_indexes) > 1 and has_bulk_edits:
+            val_to_paste = matrix[0][0]
+            edits = []
+            for idx in valid_indexes:
+                actual_r = model._get_actual_row(idx.row())
+                edits.append((actual_r, idx.column(), val_to_paste))
+            model.apply_bulk_cell_edits(edits, description="Paste to Selection")
+            return
+
+        # CASE 2: 1xC clipboard (single row) replicated across multiple selected rows
+        if num_clip_rows == 1 and len(selected_visual_rows) > 1 and has_bulk_edits:
+            edits = []
+            for r in selected_visual_rows:
+                actual_r = model._get_actual_row(r)
+                for c_offset, c in enumerate(selected_cols):
+                    clip_c = c_offset % num_clip_cols
+                    val_to_paste = matrix[0][clip_c] if clip_c < len(matrix[0]) else ""
+                    edits.append((actual_r, c, val_to_paste))
+            model.apply_bulk_cell_edits(edits, description="Paste Row Pattern")
+            return
+
+        # CASE 3: Rx1 clipboard (single column) replicated across multiple selected columns
+        if num_clip_cols == 1 and len(selected_cols) > 1 and has_bulk_edits:
+            edits = []
+            for r_offset, r in enumerate(selected_visual_rows):
+                actual_r = model._get_actual_row(r)
+                clip_r = r_offset % num_clip_rows
+                val_to_paste = matrix[clip_r][0] if clip_r < len(matrix) and matrix[clip_r] else ""
+                for c in selected_cols:
+                    edits.append((actual_r, c, val_to_paste))
+            model.apply_bulk_cell_edits(edits, description="Paste Column Pattern")
+            return
+
+        # CASE 4: Standard block paste starting at anchor cell (top-left of selection)
+        start_row = min(selected_visual_rows)
+        start_col = min(selected_cols)
         if hasattr(model, "paste_bulk_matrix"):
             model.paste_bulk_matrix(start_row, start_col, matrix)
+
+    def fill_down(self):
+        selection = self.selectionModel().selectedIndexes()
+        if not selection:
+            return
+
+        model = self.model()
+        if not hasattr(model, "apply_bulk_cell_edits"):
+            return
+
+        valid_indexes = [idx for idx in selection if not self.isColumnHidden(idx.column())]
+        if not valid_indexes:
+            return
+
+        cols = sorted(set(idx.column() for idx in valid_indexes))
+        df = model.get_dataframe()
+        edits = []
+
+        for c in cols:
+            col_indexes = [idx for idx in valid_indexes if idx.column() == c]
+            sorted_by_row = sorted(col_indexes, key=lambda idx: idx.row())
+            if len(sorted_by_row) < 2:
+                continue
+
+            top_actual_r = model._get_actual_row(sorted_by_row[0].row())
+            if top_actual_r >= len(df) or c >= len(df.columns):
+                continue
+            top_val = df.iat[top_actual_r, c]
+
+            for target_idx in sorted_by_row[1:]:
+                target_actual_r = model._get_actual_row(target_idx.row())
+                edits.append((target_actual_r, c, top_val))
+
+        if edits:
+            model.apply_bulk_cell_edits(edits, description="Fill Down")
+
+    def fill_right(self):
+        selection = self.selectionModel().selectedIndexes()
+        if not selection:
+            return
+
+        model = self.model()
+        if not hasattr(model, "apply_bulk_cell_edits"):
+            return
+
+        valid_indexes = [idx for idx in selection if not self.isColumnHidden(idx.column())]
+        if not valid_indexes:
+            return
+
+        visual_rows = sorted(set(idx.row() for idx in valid_indexes))
+        df = model.get_dataframe()
+        edits = []
+
+        for r in visual_rows:
+            row_indexes = [idx for idx in valid_indexes if idx.row() == r]
+            sorted_by_col = sorted(row_indexes, key=lambda idx: idx.column())
+            if len(sorted_by_col) < 2:
+                continue
+
+            actual_r = model._get_actual_row(r)
+            left_col = sorted_by_col[0].column()
+            if actual_r >= len(df) or left_col >= len(df.columns):
+                continue
+            left_val = df.iat[actual_r, left_col]
+
+            for target_idx in sorted_by_col[1:]:
+                target_col = target_idx.column()
+                edits.append((actual_r, target_col, left_val))
+
+        if edits:
+            model.apply_bulk_cell_edits(edits, description="Fill Right")
 
     def clear_selection(self):
         selection = self.selectionModel().selectedIndexes()
@@ -144,7 +284,7 @@ class ExcelTableView(QTableView):
             return
         model = self.model()
         for idx in selection:
-            model.setData(idx, "", Qt.ItemDataRole.EditRole)
+            model.setData(idx, None, Qt.ItemDataRole.EditRole)
 
 
 class DataGridWidget(QWidget):
@@ -641,6 +781,15 @@ class DataGridWidget(QWidget):
 
         act_paste = menu.addAction("📥 Paste (Ctrl+V)")
         act_paste.triggered.connect(self.table_view.paste_selection)
+
+        act_fill_down = menu.addAction("⬇️ Fill Down (Ctrl+D)")
+        act_fill_down.triggered.connect(self.table_view.fill_down)
+
+        act_fill_right = menu.addAction("➡️ Fill Right (Ctrl+R)")
+        act_fill_right.triggered.connect(self.table_view.fill_right)
+
+        act_set_null = menu.addAction("🧹 Set Cell(s) to Null (Delete)")
+        act_set_null.triggered.connect(self.table_view.clear_selection)
 
         menu.addSeparator()
 

@@ -46,6 +46,38 @@ class EditCellCommand(QUndoCommand):
             pass
 
 
+class BulkCellsEditCommand(QUndoCommand):
+    """Undoable bulk edit of multiple cells (e.g. paste into multi-selection, fill down, fill right)."""
+
+    def __init__(self, model: "ParquetTableModel", edits: List[Tuple[int, int, Any, Any, bool]], description: str = "Bulk Edit"):
+        super().__init__(f"{description} ({len(edits)} cells)")
+        self._model = model
+        self._edits = edits
+
+    def redo(self):
+        for actual_r, c, _, new_val, _ in self._edits:
+            try:
+                self._model._df.iat[actual_r, c] = new_val
+                self._model._modified_cells.add((actual_r, c))
+            except Exception:
+                pass
+        self._model._is_dirty = True
+        self._model._recompute_filtered_indices()
+        self._model.dataModified.emit()
+
+    def undo(self):
+        for actual_r, c, old_val, _, was_modified in self._edits:
+            try:
+                self._model._df.iat[actual_r, c] = old_val
+                if not was_modified:
+                    self._model._modified_cells.discard((actual_r, c))
+            except Exception:
+                pass
+        self._model._is_dirty = True
+        self._model._recompute_filtered_indices()
+        self._model.dataModified.emit()
+
+
 class BulkPasteCommand(QUndoCommand):
     """Undoable bulk paste of a row×col matrix starting at (start_row, start_col)."""
 

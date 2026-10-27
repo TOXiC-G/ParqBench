@@ -184,7 +184,14 @@ class ParquetTableModel(QAbstractTableModel):
         col_dtype = self._col_dtypes[col]
         current_val = self._df.iat[actual_row, col]
 
-        parsed_val, success = self._cast_value(str(value).strip(), col_dtype, col=col)
+        if value is None:
+            parsed_val, success = None, True
+        else:
+            raw_str = str(value)
+            if raw_str.strip().lower() == "<null>":
+                parsed_val, success = None, True
+            else:
+                parsed_val, success = self._cast_value(raw_str, col_dtype, col=col)
         if not success:
             return False
 
@@ -688,18 +695,10 @@ class ParquetTableModel(QAbstractTableModel):
         actual_cols_to_paste = min(num_paste_cols, max_cols - start_col)
 
         if not _from_command:
-            # Snapshot old values for undo
-            old_matrix = []
-            for r_off in range(num_paste_rows):
-                old_row = []
-                for c_off in range(actual_cols_to_paste):
-                    tr = actual_start_row + r_off
-                    tc = start_col + c_off
-                    if tr < len(self._df) and tc < len(self._col_names):
-                        old_row.append(self._df.iat[tr, tc])
-                    else:
-                        old_row.append(None)
-                old_matrix.append(old_row)
+            # Vectorized snapshot of old values for undo
+            end_r = min(len(self._df), actual_start_row + num_paste_rows)
+            end_c = min(len(self._col_names), start_col + actual_cols_to_paste)
+            old_matrix = self._df.iloc[actual_start_row:end_r, start_col:end_c].values.tolist()
 
             from src.models.commands import BulkPasteCommand
             cmd = BulkPasteCommand(self, actual_start_row, start_col, old_matrix, matrix)
@@ -727,6 +726,54 @@ class ParquetTableModel(QAbstractTableModel):
         self._recompute_filtered_indices()
         self.dataModified.emit()
         return num_paste_rows, actual_cols_to_paste
+
+    def apply_bulk_cell_edits(self, edits: List[Tuple[int, int, Any]], description: str = "Bulk Edit") -> int:
+        """
+        Applies a batch of (actual_row, col, raw_new_val) edits with unified undo support.
+        Only edits where value actually changes and parses successfully are pushed.
+        Returns the count of modified cells.
+        """
+        if not edits or self._df is None:
+            return 0
+
+        command_edits = []
+        for actual_r, c, raw_val in edits:
+            if not (0 <= actual_r < len(self._df) and 0 <= c < len(self._col_names)):
+                continue
+
+            col_dtype = self._col_dtypes[c]
+            current_val = self._df.iat[actual_r, c]
+
+            if raw_val is None:
+                parsed_val, success = None, True
+            elif isinstance(raw_val, str) and raw_val.strip().lower() == "<null>":
+                parsed_val, success = None, True
+            else:
+                if not isinstance(raw_val, str):
+                    parsed_val, success = raw_val, True
+                else:
+                    parsed_val, success = self._cast_value(raw_val, col_dtype, col=c)
+
+            if not success:
+                continue
+
+            # Check if value actually changes
+            try:
+                if (pd.isna(current_val) and pd.isna(parsed_val)) or (current_val == parsed_val):
+                    continue
+            except Exception:
+                pass
+
+            was_modified = (actual_r, c) in self._modified_cells
+            command_edits.append((actual_r, c, current_val, parsed_val, was_modified))
+
+        if not command_edits:
+            return 0
+
+        from src.models.commands import BulkCellsEditCommand
+        cmd = BulkCellsEditCommand(self, command_edits, description)
+        self._undo_stack.push(cmd)
+        return len(command_edits)
 
     def apply_formula(self, target_col: str, result_series: pd.Series, _from_command: bool = False):
         """Apply a formula result to a column (or add it as new)."""
@@ -816,12 +863,16 @@ class ParquetTableModel(QAbstractTableModel):
     # -------------------------------------------------------------------------
 
     def _cast_value(self, input_str: str, target_dtype: Any, col: Optional[int] = None) -> Tuple[Any, bool]:
-        if input_str == "" or input_str.lower() in ("none", "null", "<null>", "nan"):
+        trimmed = input_str.strip()
+        # Explicit <null> always maps to None across all data types
+        if trimmed.lower() == "<null>":
             return None, True
 
         try:
             if pd.api.types.is_bool_dtype(target_dtype):
-                lowered = input_str.lower()
+                if trimmed == "" or trimmed.lower() in ("none", "null", "nan"):
+                    return None, True
+                lowered = trimmed.lower()
                 if lowered in ("true", "1", "t", "yes", "y"):
                     return True, True
                 elif lowered in ("false", "0", "f", "no", "n"):
@@ -829,13 +880,19 @@ class ParquetTableModel(QAbstractTableModel):
                 return None, False
 
             elif pd.api.types.is_integer_dtype(target_dtype):
-                return int(round(float(input_str))), True
+                if trimmed == "" or trimmed.lower() in ("none", "null", "nan"):
+                    return None, True
+                return int(round(float(trimmed))), True
 
             elif pd.api.types.is_float_dtype(target_dtype):
-                return float(input_str), True
+                if trimmed == "" or trimmed.lower() in ("none", "null", "nan"):
+                    return None, True
+                return float(trimmed), True
 
             elif pd.api.types.is_datetime64_any_dtype(target_dtype):
-                return pd.to_datetime(input_str), True
+                if trimmed == "" or trimmed.lower() in ("none", "null", "nan"):
+                    return None, True
+                return pd.to_datetime(trimmed), True
 
             else:
                 # Check if this object column is date-like or decimal-like
@@ -846,15 +903,21 @@ class ParquetTableModel(QAbstractTableModel):
                     if not sample.empty:
                         first_vals = sample.head(10)
                         if any(isinstance(v, (datetime.date, datetime.datetime)) for v in first_vals):
-                            parsed_dt = pd.to_datetime(input_str, errors="coerce")
+                            if trimmed == "" or trimmed.lower() in ("none", "null", "nan"):
+                                return None, True
+                            parsed_dt = pd.to_datetime(trimmed, errors="coerce")
                             if pd.notna(parsed_dt):
                                 return parsed_dt.date(), True
                         elif any(isinstance(v, decimal.Decimal) for v in first_vals):
+                            if trimmed == "" or trimmed.lower() in ("none", "null", "nan"):
+                                return None, True
                             try:
-                                cleaned = input_str.replace("$", "").replace(",", "")
+                                cleaned = trimmed.replace("$", "").replace(",", "")
                                 return decimal.Decimal(cleaned), True
                             except Exception:
                                 return None, False
+
+                # String or general object column: preserve the exact string (e.g. "None", "null", "nan", "")
                 return input_str, True
 
         except Exception:

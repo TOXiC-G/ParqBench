@@ -138,6 +138,106 @@ class TestAdvancedFeatures(unittest.TestCase):
         header_text_filtered = self.model.headerData(0, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole)
         self.assertIn("🔍", header_text_filtered)
 
+    def test_apply_bulk_cell_edits_and_undo(self):
+        """Tests ParquetTableModel.apply_bulk_cell_edits with type casting and unified undo."""
+        df = pd.DataFrame({
+            "col_str": ["A", "B", "C", "D"],
+            "col_num": [1, 2, 3, 4],
+        })
+        model = ParquetTableModel(df)
+
+        # Apply edits across multiple cells
+        edits = [
+            (0, 0, "Z"),
+            (2, 0, "None"),  # Should be string "None"
+            (1, 1, "99"),
+            (3, 1, "<null>"), # Should be None
+        ]
+        count = model.apply_bulk_cell_edits(edits, description="Test Bulk Edit")
+        self.assertEqual(count, 4)
+
+        df_after = model.get_dataframe()
+        self.assertEqual(df_after.iat[0, 0], "Z")
+        self.assertEqual(df_after.iat[2, 0], "None")
+        self.assertEqual(df_after.iat[1, 1], 99)
+        self.assertTrue(pd.isna(df_after.iat[3, 1]))
+
+        # Unified undo
+        model.undo_stack.undo()
+        df_undone = model.get_dataframe()
+        self.assertEqual(df_undone.iat[0, 0], "A")
+        self.assertEqual(df_undone.iat[2, 0], "C")
+        self.assertEqual(df_undone.iat[1, 1], 2)
+        self.assertEqual(df_undone.iat[3, 1], 4)
+
+    def test_table_view_fill_down_and_fill_right(self):
+        """Tests Fill Down (Ctrl+D) and Fill Right (Ctrl+R) in ExcelTableView."""
+        from PySide6.QtCore import QItemSelection, QItemSelectionRange
+        from src.ui.data_grid_view import DataGridWidget
+
+        df = pd.DataFrame({
+            "A": ["TopA", "x", "y"],
+            "B": ["TopB", "x", "y"],
+            "C": ["TopC", "x", "y"],
+        })
+        grid = DataGridWidget()
+        grid.load_data(df, {"columns": {}})
+        table = grid.table_view
+        model = grid.table_model
+
+        # 1. Test Fill Down on columns 0 and 1, rows 0..2
+        sel_range = QItemSelection(model.index(0, 0), model.index(2, 1))
+        table.selectionModel().select(sel_range, table.selectionModel().SelectionFlag.ClearAndSelect)
+
+        table.fill_down()
+        current_df = model.get_dataframe()
+        self.assertEqual(current_df.iat[1, 0], "TopA")
+        self.assertEqual(current_df.iat[2, 0], "TopA")
+        self.assertEqual(current_df.iat[1, 1], "TopB")
+        self.assertEqual(current_df.iat[2, 1], "TopB")
+        # Column C should be untouched
+        self.assertEqual(current_df.iat[1, 2], "x")
+
+        # Undo fill down
+        model.undo_stack.undo()
+        self.assertEqual(model.get_dataframe().iat[1, 0], "x")
+
+        # 2. Test Fill Right on row 0, columns 0..2
+        sel_row_range = QItemSelection(model.index(0, 0), model.index(0, 2))
+        table.selectionModel().select(sel_row_range, table.selectionModel().SelectionFlag.ClearAndSelect)
+
+        table.fill_right()
+        self.assertEqual(model.get_dataframe().iat[0, 1], "TopA")
+        self.assertEqual(model.get_dataframe().iat[0, 2], "TopA")
+
+    def test_paste_single_value_to_multiple_cells(self):
+        """Tests 1-to-many paste into multiple selected cells."""
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtCore import QItemSelection
+        from src.ui.data_grid_view import DataGridWidget
+
+        df = pd.DataFrame({
+            "col": ["1", "2", "3", "4"],
+        })
+        grid = DataGridWidget()
+        grid.load_data(df, {"columns": {}})
+        table = grid.table_view
+        model = grid.table_model
+
+        # Copy single value
+        QGuiApplication.clipboard().setText("PastedValue")
+
+        # Select rows 1, 2, 3
+        sel_range = QItemSelection(model.index(1, 0), model.index(3, 0))
+        table.selectionModel().select(sel_range, table.selectionModel().SelectionFlag.ClearAndSelect)
+
+        table.paste_selection()
+        current_df = model.get_dataframe()
+        self.assertEqual(current_df.iat[0, 0], "1") # untouched
+        self.assertEqual(current_df.iat[1, 0], "PastedValue")
+        self.assertEqual(current_df.iat[2, 0], "PastedValue")
+        self.assertEqual(current_df.iat[3, 0], "PastedValue")
+
 
 if __name__ == "__main__":
     unittest.main()

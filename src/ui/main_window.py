@@ -195,6 +195,8 @@ class MainWindow(QMainWindow):
         corner_layout.addWidget(self.btn_update_available)
 
         menubar.setCornerWidget(corner_widget, Qt.Corner.TopRightCorner)
+        menubar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        menubar.customContextMenuRequested.connect(self._show_menubar_context_menu)
 
         # ----- FILE MENU -----
         file_menu = menubar.addMenu("&File")
@@ -245,6 +247,10 @@ class MainWindow(QMainWindow):
         export_menu.addAction("Export to JSON (.json)...").triggered.connect(self._export_json)
 
         file_menu.addSeparator()
+
+        act_check_updates_file = QAction("Check for Updates...", self)
+        act_check_updates_file.triggered.connect(self._check_for_updates_manual)
+        file_menu.addAction(act_check_updates_file)
 
         act_exit = QAction("❌ Exit", self)
         act_exit.setShortcut(QKeySequence("Ctrl+Q"))
@@ -369,7 +375,7 @@ class MainWindow(QMainWindow):
 
         # ----- HELP MENU -----
         help_menu = menubar.addMenu("&Help")
-        act_check_updates = QAction("🔄 Check for Updates...", self)
+        act_check_updates = QAction("Check for Updates...", self)
         act_check_updates.triggered.connect(self._check_for_updates_manual)
         help_menu.addAction(act_check_updates)
 
@@ -383,7 +389,7 @@ class MainWindow(QMainWindow):
 
         help_menu.addSeparator()
 
-        act_about = QAction("ℹ️ About ParqBench", self)
+        act_about = QAction("About ParqBench", self)
         act_about.triggered.connect(self._show_about_dialog)
         help_menu.addAction(act_about)
 
@@ -430,7 +436,7 @@ class MainWindow(QMainWindow):
         # Add update actions directly in the Settings menu
         settings_menu.addAction(self.act_check_updates_startup)
 
-        act_manual_update_tb = QAction("🔄 Check for Updates Now...", self)
+        act_manual_update_tb = QAction("Check for Updates Now...", self)
         act_manual_update_tb.triggered.connect(self._check_for_updates_manual)
         settings_menu.addAction(act_manual_update_tb)
 
@@ -439,7 +445,7 @@ class MainWindow(QMainWindow):
         act_theme_tb.triggered.connect(self._toggle_theme)
         settings_menu.addAction(act_theme_tb)
 
-        act_about_tb = QAction(f"ℹ️ About {__app_name__}", self)
+        act_about_tb = QAction(f"About {__app_name__}", self)
         act_about_tb.triggered.connect(self._show_about_dialog)
         settings_menu.addAction(act_about_tb)
 
@@ -884,9 +890,9 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     def _check_updates_silent(self):
-        """Perform background check on startup and show status in the top bar corner."""
+        """Perform background check on startup silently in the background without any popups."""
         self.lbl_update_status.setText("🔄 Checking for updates…")
-        self.lbl_update_status.setVisible(True)
+        self.lbl_update_status.setVisible(False)
 
         self._update_check_thread = QThread()
         worker = UpdateCheckWorker(GITHUB_REPO)
@@ -918,6 +924,24 @@ class MainWindow(QMainWindow):
         """Handle click on the top-bar update button."""
         dlg = UpdaterDialog(self, initial_info=self._available_update_info)
         dlg.exec()
+
+    def _show_menubar_context_menu(self, pos):
+        """Context menu on the top menu bar / header providing quick update and help access."""
+        menu = QMenu(self)
+        act_update = menu.addAction("Check for Updates...")
+        act_update.triggered.connect(self._check_for_updates_manual)
+
+        menu.addAction(self.act_check_updates_startup)
+
+        menu.addSeparator()
+
+        act_theme = menu.addAction("🌗 Toggle Dark / Light Theme")
+        act_theme.triggered.connect(self._toggle_theme)
+
+        act_about = menu.addAction(f"About {__app_name__}")
+        act_about.triggered.connect(self._show_about_dialog)
+
+        menu.exec(QCursor.pos())
 
     def _show_about_dialog(self):
         QMessageBox.about(

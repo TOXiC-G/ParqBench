@@ -131,6 +131,48 @@ class TestParquetEditor(unittest.TestCase):
         self.assertTrue(ParquetHandler.export_json(df, json_path))
         self.assertTrue(os.path.exists(json_path))
 
+    def test_string_and_null_distinction(self):
+        """Verifies that 'None', 'null', and empty strings are preserved in string columns, while <null> and None become actual nulls."""
+        df = pd.DataFrame({
+            "str_col": ["initial", "value", "here"],
+            "int_col": [10, 20, 30],
+        })
+        model = ParquetTableModel(df)
+
+        # 1. Edit string column to 'None' literal
+        idx_str_0 = model.index(0, 0)
+        self.assertTrue(model.setData(idx_str_0, "None"))
+        self.assertEqual(model.get_dataframe().iat[0, 0], "None")
+        self.assertEqual(model.data(idx_str_0), "None")
+
+        # 2. Edit string column to 'null' literal
+        idx_str_1 = model.index(1, 0)
+        self.assertTrue(model.setData(idx_str_1, "null"))
+        self.assertEqual(model.get_dataframe().iat[1, 0], "null")
+        self.assertEqual(model.data(idx_str_1), "null")
+
+        # 3. Edit string column to empty string ""
+        idx_str_2 = model.index(2, 0)
+        self.assertTrue(model.setData(idx_str_2, ""))
+        self.assertEqual(model.get_dataframe().iat[2, 0], "")
+        self.assertEqual(model.data(idx_str_2), "")
+
+        # 4. Explicit '<null>' token in string column becomes actual None
+        self.assertTrue(model.setData(idx_str_0, "<null>"))
+        self.assertTrue(pd.isna(model.get_dataframe().iat[0, 0]) or model.get_dataframe().iat[0, 0] is None)
+        self.assertEqual(model.data(idx_str_0), "<null>")
+
+        # 5. Passing None directly sets actual None
+        self.assertTrue(model.setData(idx_str_1, None))
+        self.assertTrue(pd.isna(model.get_dataframe().iat[1, 0]) or model.get_dataframe().iat[1, 0] is None)
+        self.assertEqual(model.data(idx_str_1), "<null>")
+
+        # 6. For numeric columns, entering 'None' or empty string still casts to null
+        idx_int_0 = model.index(0, 1)
+        self.assertTrue(model.setData(idx_int_0, "None"))
+        self.assertTrue(pd.isna(model.get_dataframe().iat[0, 1]))
+        self.assertEqual(model.data(idx_int_0), "<null>")
+
 
 if __name__ == "__main__":
     unittest.main()
